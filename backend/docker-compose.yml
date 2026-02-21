@@ -1,0 +1,15 @@
+services:
+  mongodb:
+    image: mongo:7
+    container_name: restaurant_mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: restaurant_user
+      MONGO_INITDB_ROOT_PASSWORD: restaurant_pass
+      MONGO_INITDB_DATABASE: restaurant_db
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./db/init.mongo.js:/docker-entrypoint-initdb.d/01-init.mongo.js:ro
+      - mongodb_data:/data/db
+volumes:
+  mongodb_data:
