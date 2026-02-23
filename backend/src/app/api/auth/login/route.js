@@ -1,61 +1,28 @@
-import { getCollection, nextSequence } from '@/lib/db';
+import { query } from '@/lib/db';
 import { withCors, corsPreflight } from '@/lib/cors';
 
-const DEMO_USERS = [
-  { name: 'John Chef', email: 'chef@rest.com', role: 'chef', password: '1234' },
-  { name: 'Sarah Server', email: 'staff@rest.com', role: 'staff', password: '1234' },
-  { name: 'Mike Manager', email: 'manager@rest.com', role: 'manager', password: '1234' },
-  { name: 'Cathy Cashier', email: 'cashier@rest.com', role: 'cashier', password: '1234' },
-  { name: 'Chef 1', email: 'chef@test.com', role: 'chef', password: '1234' },
-  { name: 'Staff 1', email: 'staff@test.com', role: 'staff', password: '1234' },
-  { name: 'Manager 1', email: 'manager@test.com', role: 'manager', password: '1234' },
-  { name: 'Cashier 1', email: 'cashier@test.com', role: 'cashier', password: '1234' },
-];
+const getOptionalColumns = async () => {
+  const [columnResult, phoneTableResult] = await Promise.all([
+    query(
+      `SELECT column_name
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'app_user'
+         AND column_name = ANY($1::text[])`,
+      [['photo']],
+    ),
+    query(`SELECT to_regclass('public.user_phone') IS NOT NULL AS has_user_phone_table`),
+  ]);
 
-const ensureDemoUsers = async () => {
-  const users = await getCollection('app_user');
-  for (const user of DEMO_USERS) {
-    const existing = await users.findOne({ email: user.email.toLowerCase() }, { projection: { _id: 1 } });
-    if (existing) continue;
-
-    let inserted = false;
-    for (let attempt = 0; attempt < 3 && !inserted; attempt += 1) {
-      const userId = await nextSequence('app_user', {
-        collectionName: 'app_user',
-        idField: 'user_id',
-      });
-
-      try {
-        const result = await users.updateOne(
-          { email: user.email.toLowerCase() },
-          {
-            $setOnInsert: {
-              user_id: userId,
-              name: user.name,
-              email: user.email.toLowerCase(),
-              role: user.role,
-              password: user.password,
-              dob: null,
-              photo: null,
-              salary: 0,
-            },
-          },
-          { upsert: true },
-        );
-
-        inserted = result.upsertedCount === 1 || result.matchedCount === 1;
-      } catch (error) {
-        if (error?.code !== 11000 || attempt === 2) {
-          throw error;
-        }
-      }
-    }
-  }
+  const available = new Set(columnResult.rows.map((row) => row.column_name));
+  return {
+    hasPhoto: available.has('photo'),
+    hasUserPhoneTable: Boolean(phoneTableResult.rows[0]?.has_user_phone_table),
+  };
 };
 
 export async function POST(request) {
   try {
-    const users = await getCollection('app_user');
     const body = await request.json();
     const email = String(body?.email || '').trim().toLowerCase();
     const password = String(body?.password || '').trim();
@@ -66,37 +33,32 @@ export async function POST(request) {
       );
     }
 
-    await ensureDemoUsers();
+    const { hasPhoto, hasUserPhoneTable } = await getOptionalColumns();
+    const photoField = hasPhoto ? 'photo' : 'NULL::text AS photo';
+    const phoneField = hasUserPhoneTable
+      ? `(SELECT up.phone_no FROM user_phone up WHERE up.user_id = app_user.user_id ORDER BY up.phone_no ASC LIMIT 1) AS phone`
+      : 'NULL::text AS phone';
 
-    const user = await users.findOne(
-      { email, password },
-      {
-        projection: {
-          _id: 0,
-          user_id: 1,
-          name: 1,
-          email: 1,
-          role: 1,
-          dob: 1,
-          photo: 1,
-        },
-      },
+    const result = await query(
+      `SELECT user_id AS id,
+              name,
+              email,
+              role,
+              dob AS date_of_birth,
+              ${photoField},
+              ${phoneField}
+       FROM app_user
+       WHERE LOWER(email) = $1 AND password = $2
+       LIMIT 1`,
+      [email, password],
     );
 
+    const user = result.rows[0];
     if (!user) {
       return withCors(Response.json({ error: 'Invalid email or password' }, { status: 401 }));
     }
 
-    return withCors(
-      Response.json({
-        id: Number(user.user_id || 0),
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        date_of_birth: user.dob || null,
-        photo: user.photo || null,
-      }),
-    );
+    return withCors(Response.json(user));
   } catch (error) {
     console.error('POST /api/auth/login failed', error);
     const message =

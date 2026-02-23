@@ -1,4 +1,4 @@
-import { getCollection } from '@/lib/db';
+import { query } from '@/lib/db';
 import { withCors, corsPreflight } from '@/lib/cors';
 
 const safeRows = (rows) =>
@@ -10,69 +10,59 @@ const safeRows = (rows) =>
 
 export async function GET() {
   try {
-    const orders = await getCollection('orders');
-    const orderItems = await getCollection('order_item');
-    const payments = await getCollection('payment');
-
-    const [orderDocs, itemDocs, paymentDocs] = await Promise.all([
-      orders.find({}, { projection: { _id: 0, order_id: 1, order_time: 1, status: 1 } }).toArray(),
-      orderItems.find({}, { projection: { _id: 0, order_id: 1, quantity: 1, unit_price: 1 } }).toArray(),
-      payments
-        .find({}, { projection: { _id: 0, order_id: 1, pay_time: 1, amount: 1, tax: 1, discount: 1, payment_status: 1 } })
-        .toArray(),
-    ]);
-
-    const subtotalByOrderId = new Map();
-    for (const item of itemDocs) {
-      const orderId = Number(item.order_id || 0);
-      const line = Number(item.quantity || 0) * Number(item.unit_price || 0);
-      subtotalByOrderId.set(orderId, (subtotalByOrderId.get(orderId) || 0) + line);
-    }
-
-    const paymentByOrderId = new Map(
-      paymentDocs.map((payment) => [Number(payment.order_id || 0), payment]),
+    const result = await query(
+      `WITH item_totals AS (
+         SELECT oi.order_id, COALESCE(SUM(oi.quantity * oi.unit_price), 0) AS subtotal
+         FROM order_item oi
+         GROUP BY oi.order_id
+       ),
+       paid_orders AS (
+         SELECT
+           o.order_id,
+           DATE_TRUNC('month', COALESCE(p.pay_time, o.order_time)) AS month_start,
+           COALESCE(NULLIF(p.amount, 0), it.subtotal, 0) + COALESCE(p.tax, 0) - COALESCE(p.discount, 0) AS total_amount
+         FROM orders o
+         LEFT JOIN payment p ON p.order_id = o.order_id
+         LEFT JOIN item_totals it ON it.order_id = o.order_id
+         WHERE
+           LOWER(COALESCE(p.payment_status, '')) = 'paid'
+           OR (p.order_id IS NULL AND LOWER(COALESCE(o.status, '')) = 'paid')
+       )
+       SELECT
+         TRIM(TO_CHAR(month_start, 'Mon YYYY')) AS month,
+         COUNT(*)::int AS orders,
+         COALESCE(SUM(total_amount), 0)::float8 AS revenue
+       FROM paid_orders
+       GROUP BY month_start
+       ORDER BY month_start ASC`,
     );
 
-    const monthly = new Map();
-    for (const order of orderDocs) {
-      const orderId = Number(order.order_id || 0);
-      const payment = paymentByOrderId.get(orderId);
-      const paymentStatus = String(payment?.payment_status || '').toLowerCase();
-      const orderStatus = String(order?.status || '').toLowerCase();
-      const isPaid = paymentStatus === 'paid' || (!payment && orderStatus === 'paid');
-      if (!isPaid) continue;
+    return withCors(Response.json(safeRows(result.rows)));
+  } catch (primaryError) {
+    console.error('GET /api/reports/monthly primary query failed', primaryError);
 
-      const monthDate = payment?.pay_time ? new Date(payment.pay_time) : new Date(order.order_time || Date.now());
-      const monthKey = `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, '0')}`;
-      const subtotal = Number(subtotalByOrderId.get(orderId) || 0);
-      const amount = Number(payment?.amount || 0);
-      const tax = Number(payment?.tax || 0);
-      const discount = Number(payment?.discount || 0);
-      const totalAmount = (amount !== 0 ? amount : subtotal) + tax - discount;
-
-      if (!monthly.has(monthKey)) {
-        monthly.set(monthKey, { monthDate, orders: 0, revenue: 0 });
-      }
-      const entry = monthly.get(monthKey);
-      entry.orders += 1;
-      entry.revenue += totalAmount;
+    try {
+      const fallback = await query(
+        `WITH item_totals AS (
+           SELECT oi.order_id, COALESCE(SUM(oi.quantity * oi.unit_price), 0) AS subtotal
+           FROM order_item oi
+           GROUP BY oi.order_id
+         )
+         SELECT
+           TRIM(TO_CHAR(DATE_TRUNC('month', o.order_time), 'Mon YYYY')) AS month,
+           COUNT(*)::int AS orders,
+           COALESCE(SUM(COALESCE(it.subtotal, 0)), 0)::float8 AS revenue
+         FROM orders o
+         LEFT JOIN item_totals it ON it.order_id = o.order_id
+         WHERE LOWER(COALESCE(o.status, '')) = 'paid'
+         GROUP BY DATE_TRUNC('month', o.order_time)
+         ORDER BY DATE_TRUNC('month', o.order_time) ASC`,
+      );
+      return withCors(Response.json(safeRows(fallback.rows)));
+    } catch (fallbackError) {
+      console.error('GET /api/reports/monthly fallback query failed', fallbackError);
+      return withCors(Response.json([]));
     }
-
-    const formatMonth = (date) =>
-      new Intl.DateTimeFormat('en-US', { month: 'short', year: 'numeric' }).format(date);
-
-    const rows = [...monthly.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([, value]) => ({
-        month: formatMonth(value.monthDate),
-        orders: value.orders,
-        revenue: value.revenue,
-      }));
-
-    return withCors(Response.json(safeRows(rows)));
-  } catch (error) {
-    console.error('GET /api/reports/monthly failed', error);
-    return withCors(Response.json([]));
   }
 }
 

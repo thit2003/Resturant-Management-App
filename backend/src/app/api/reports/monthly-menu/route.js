@@ -1,4 +1,4 @@
-import { getCollection } from '@/lib/db';
+import { query } from '@/lib/db';
 import { withCors, corsPreflight } from '@/lib/cors';
 
 const safeRows = (rows) =>
@@ -9,87 +9,166 @@ const safeRows = (rows) =>
     revenue: Number(row?.revenue || 0),
   }));
 
-export async function GET() {
+const parseYearMonth = (request) => {
+  const { searchParams } = new URL(request.url);
+  const yearRaw = searchParams.get('year');
+  const monthRaw = searchParams.get('month');
+
+  if (!yearRaw && !monthRaw) return { value: null, error: '' };
+  if (!yearRaw || !monthRaw) {
+    return {
+      value: null,
+      error: 'Both year and month are required when filtering monthly menu report.',
+    };
+  }
+
+  const year = Number.parseInt(yearRaw, 10);
+  const month = Number.parseInt(monthRaw, 10);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || year < 1900 || year > 3000 || month < 1 || month > 12) {
+    return { value: null, error: 'Invalid year/month filter for monthly menu report.' };
+  }
+
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+  if (year > currentYear || (year === currentYear && month > currentMonth)) {
+    return { value: null, error: 'Future months are not allowed for monthly menu report.' };
+  }
+
+  return { value: { year, month }, error: '' };
+};
+
+export async function GET(request) {
+  const parsed = parseYearMonth(request);
+  if (parsed.error) {
+    return withCors(Response.json({ error: parsed.error }, { status: 400 }));
+  }
+
+  const filter = parsed.value;
+  const filterParams = filter ? [filter.year, filter.month] : [];
+  const primaryMonthFilter = filter
+    ? `AND DATE_TRUNC('month', p.pay_time) = MAKE_DATE($1, $2, 1)::timestamp`
+    : '';
+  const fallbackMonthFilter = filter
+    ? `AND DATE_TRUNC('month', p.pay_time) = MAKE_DATE($1, $2, 1)::timestamp`
+    : '';
+
   try {
-    const orders = await getCollection('orders');
-    const orderItems = await getCollection('order_item');
-    const menuItems = await getCollection('menu_item');
-    const payments = await getCollection('payment');
+    const result = await query(
+      `WITH order_scope AS (
+          SELECT
+            o.order_id,
+            p.pay_time AS sale_time,
+            DATE_TRUNC('month', p.pay_time) AS month_start,
+            COALESCE(p.amount, 0)::float8 AS amount,
+            COALESCE(p.tax, 0)::float8 AS tax,
+            COALESCE(p.discount, 0)::float8 AS discount
+         FROM orders o
+         JOIN payment p ON p.order_id = o.order_id
+         WHERE
+           LOWER(COALESCE(p.payment_status, '')) = 'paid'
+           ${primaryMonthFilter}
+       ),
+       order_totals AS (
+         SELECT oi.order_id, COALESCE(SUM(oi.quantity * oi.unit_price), 0)::float8 AS subtotal
+         FROM order_item oi
+         GROUP BY oi.order_id
+       ),
+       item_rows AS (
+         SELECT
+           po.month_start,
+           po.sale_time,
+           COALESCE(mi.name, 'Unknown') AS item,
+           oi.quantity::int AS quantity,
+           (oi.quantity * oi.unit_price)::float8 AS line_subtotal,
+           COALESCE(ot.subtotal, 0) AS order_subtotal,
+           po.tax,
+           po.discount
+         FROM order_scope po
+         JOIN order_item oi ON oi.order_id = po.order_id
+         LEFT JOIN menu_item mi ON mi.menu_item_id = oi.menu_item_id
+         LEFT JOIN order_totals ot ON ot.order_id = po.order_id
+       ),
+       missing_item_orders AS (
+         SELECT
+           po.month_start,
+           po.sale_time,
+           'Unknown'::text AS item,
+           0::int AS quantity,
+           po.amount AS revenue
+         FROM order_scope po
+         LEFT JOIN order_item oi ON oi.order_id = po.order_id
+         WHERE oi.order_id IS NULL
+       ),
+       combined_rows AS (
+         SELECT
+            month_start,
+            DATE_TRUNC('day', sale_time) AS sale_day,
+            sale_time,
+            item,
+            quantity,
+           COALESCE(
+             CASE
+               WHEN order_subtotal > 0
+                 THEN line_subtotal
+                      + ((line_subtotal / order_subtotal) * tax)
+                      - ((line_subtotal / order_subtotal) * discount)
+               ELSE line_subtotal
+             END,
+             0
+           )::float8 AS revenue
+         FROM item_rows
+         UNION ALL
+         SELECT
+            month_start,
+            DATE_TRUNC('day', sale_time) AS sale_day,
+            sale_time,
+            item,
+            quantity,
+            revenue
+         FROM missing_item_orders
+       )
+       SELECT
+         TO_CHAR(sale_day, 'DD-Mon-YYYY') AS month,
+         item,
+         COALESCE(SUM(quantity), 0)::int AS quantity,
+         COALESCE(SUM(revenue), 0)::float8 AS revenue
+       FROM combined_rows
+       GROUP BY month_start, sale_day, item
+       ORDER BY month_start ASC, sale_day DESC, item ASC`,
+      filterParams,
+    );
 
-    const [orderDocs, itemDocs, menuDocs, paymentDocs] = await Promise.all([
-      orders.find({}, { projection: { _id: 0, order_id: 1, order_time: 1, status: 1 } }).toArray(),
-      orderItems
-        .find({}, { projection: { _id: 0, order_id: 1, menu_item_id: 1, quantity: 1, unit_price: 1 } })
-        .toArray(),
-      menuItems.find({}, { projection: { _id: 0, menu_item_id: 1, name: 1 } }).toArray(),
-      payments.find({}, { projection: { _id: 0, order_id: 1, pay_time: 1, tax: 1, discount: 1 } }).toArray(),
-    ]);
+    return withCors(Response.json(safeRows(result.rows)));
+  } catch (primaryError) {
+    console.error('GET /api/reports/monthly-menu primary query failed', primaryError);
 
-    const menuNameById = new Map(menuDocs.map((doc) => [Number(doc.menu_item_id || 0), doc.name || 'Unknown']));
-    const paymentByOrderId = new Map(paymentDocs.map((doc) => [Number(doc.order_id || 0), doc]));
-    const itemsByOrderId = new Map();
-
-    for (const item of itemDocs) {
-      const orderId = Number(item.order_id || 0);
-      if (!itemsByOrderId.has(orderId)) itemsByOrderId.set(orderId, []);
-      itemsByOrderId.get(orderId).push(item);
-    }
-
-    const monthlyMenu = new Map();
-    for (const order of orderDocs) {
-      const orderStatus = String(order?.status || '').toLowerCase();
-      if (orderStatus === 'canceled') continue;
-
-      const orderId = Number(order.order_id || 0);
-      const lines = itemsByOrderId.get(orderId) || [];
-      if (lines.length === 0) continue;
-
-      const payment = paymentByOrderId.get(orderId);
-      const monthDate = payment?.pay_time ? new Date(payment.pay_time) : new Date(order.order_time || Date.now());
-      const monthKey = `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, '0')}`;
-
-      const tax = Number(payment?.tax || 0);
-      const discount = Number(payment?.discount || 0);
-      const orderSubtotal = lines.reduce(
-        (sum, line) => sum + Number(line.quantity || 0) * Number(line.unit_price || 0),
-        0,
+    try {
+      const fallback = await query(
+        `SELECT
+           TO_CHAR(DATE_TRUNC('day', p.pay_time), 'DD-Mon-YYYY') AS month,
+           COALESCE(mi.name, 'Unknown') AS item,
+           COALESCE(SUM(oi.quantity), 0)::int AS quantity,
+           COALESCE(SUM(oi.quantity * oi.unit_price), 0)::float8 AS revenue
+         FROM orders o
+         JOIN order_item oi ON oi.order_id = o.order_id
+         JOIN payment p ON p.order_id = o.order_id
+         LEFT JOIN menu_item mi ON mi.menu_item_id = oi.menu_item_id
+         WHERE LOWER(COALESCE(p.payment_status, '')) = 'paid'
+         ${fallbackMonthFilter}
+         GROUP BY DATE_TRUNC('month', p.pay_time), DATE_TRUNC('day', p.pay_time), mi.name
+         ORDER BY DATE_TRUNC('month', p.pay_time) ASC, DATE_TRUNC('day', p.pay_time) DESC, mi.name ASC`,
+        filterParams,
       );
-
-      for (const line of lines) {
-        const quantity = Number(line.quantity || 0);
-        const lineSubtotal = quantity * Number(line.unit_price || 0);
-        const itemName = menuNameById.get(Number(line.menu_item_id || 0)) || 'Unknown';
-        const revenue =
-          orderSubtotal > 0
-            ? lineSubtotal + (lineSubtotal / orderSubtotal) * tax - (lineSubtotal / orderSubtotal) * discount
-            : lineSubtotal;
-
-        const key = `${monthKey}::${itemName}`;
-        if (!monthlyMenu.has(key)) {
-          monthlyMenu.set(key, { monthDate, item: itemName, quantity: 0, revenue: 0 });
-        }
-        const entry = monthlyMenu.get(key);
-        entry.quantity += quantity;
-        entry.revenue += revenue;
-      }
+      return withCors(Response.json(safeRows(fallback.rows)));
+    } catch (fallbackError) {
+      console.error('GET /api/reports/monthly-menu fallback query failed', fallbackError);
+      const message =
+        process.env.NODE_ENV === 'production'
+          ? 'Failed to load monthly menu report'
+          : `Failed to load monthly menu report: ${fallbackError?.message || 'Unknown error'}`;
+      return withCors(Response.json({ error: message }, { status: 500 }));
     }
-
-    const formatMonth = (date) =>
-      new Intl.DateTimeFormat('en-US', { month: 'short', year: 'numeric' }).format(date);
-
-    const rows = [...monthlyMenu.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([, value]) => ({
-        month: formatMonth(value.monthDate),
-        item: value.item,
-        quantity: value.quantity,
-        revenue: value.revenue,
-      }));
-
-    return withCors(Response.json(safeRows(rows)));
-  } catch (error) {
-    console.error('GET /api/reports/monthly-menu failed', error);
-    return withCors(Response.json([]));
   }
 }
 

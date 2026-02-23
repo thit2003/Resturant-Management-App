@@ -1,41 +1,72 @@
-import { getCollection, nextSequence } from '@/lib/db';
+import { query } from '@/lib/db';
 import { withCors, corsPreflight } from '@/lib/cors';
 
-const USER_ROLES = new Set(['manager', 'chef', 'staff', 'cashier']);
+const getOptionalColumns = async () => {
+  const [columnResult, phoneTableResult] = await Promise.all([
+    query(
+      `SELECT column_name
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'app_user'
+         AND column_name = ANY($1::text[])`,
+      [['photo', 'salary']],
+    ),
+    query(`SELECT to_regclass('public.user_phone') IS NOT NULL AS has_user_phone_table`),
+  ]);
 
-const mapStaffDoc = (doc) => ({
-  id: Number(doc?.user_id || 0),
-  name: doc?.name || '',
-  email: doc?.email || '',
-  role: doc?.role || 'staff',
-  date_of_birth: doc?.dob || null,
-  photo: doc?.photo || null,
-  salary: Number(doc?.salary || 0),
-});
+  const available = new Set(columnResult.rows.map((row) => row.column_name));
+  return {
+    hasPhoto: available.has('photo'),
+    hasSalary: available.has('salary'),
+    hasUserPhoneTable: Boolean(phoneTableResult.rows[0]?.has_user_phone_table),
+  };
+};
+
+const selectStaffById = async (id, { hasPhoto, hasSalary, hasUserPhoneTable }) => {
+  const photoField = hasPhoto ? 'photo' : 'NULL::text AS photo';
+  const salaryField = hasSalary ? 'salary' : '0::numeric AS salary';
+  const phoneField = hasUserPhoneTable
+    ? `(SELECT up.phone_no FROM user_phone up WHERE up.user_id = app_user.user_id ORDER BY up.phone_no ASC LIMIT 1) AS phone`
+    : 'NULL::text AS phone';
+
+  return query(
+    `SELECT user_id AS id,
+            name,
+            email,
+            role,
+            dob AS date_of_birth,
+            ${photoField},
+            ${salaryField},
+            ${phoneField}
+     FROM app_user
+     WHERE user_id = $1`,
+    [id],
+  );
+};
 
 export async function GET() {
   try {
-    const users = await getCollection('app_user');
-    const docs = await users
-      .find(
-        {},
-        {
-          projection: {
-            _id: 0,
-            user_id: 1,
-            name: 1,
-            email: 1,
-            role: 1,
-            dob: 1,
-            photo: 1,
-            salary: 1,
-          },
-        },
-      )
-      .sort({ user_id: 1 })
-      .toArray();
+    const { hasPhoto, hasSalary, hasUserPhoneTable } = await getOptionalColumns();
+    const photoField = hasPhoto ? 'photo' : 'NULL::text AS photo';
+    const salaryField = hasSalary ? 'salary' : '0::numeric AS salary';
+    const phoneField = hasUserPhoneTable
+      ? `(SELECT up.phone_no FROM user_phone up WHERE up.user_id = app_user.user_id ORDER BY up.phone_no ASC LIMIT 1) AS phone`
+      : 'NULL::text AS phone';
 
-    return withCors(Response.json(docs.map(mapStaffDoc)));
+    const result = await query(
+      `SELECT user_id AS id,
+              name,
+              email,
+              role,
+              dob AS date_of_birth,
+              ${photoField},
+              ${salaryField},
+              ${phoneField}
+       FROM app_user
+       ORDER BY user_id ASC`,
+    );
+
+    return withCors(Response.json(result.rows));
   } catch (error) {
     console.error('GET /api/staff failed', error);
     const message =
@@ -48,57 +79,55 @@ export async function GET() {
 
 export async function POST(request) {
   try {
-    const users = await getCollection('app_user');
+    const optionalColumns = await getOptionalColumns();
+    const { hasPhoto, hasSalary, hasUserPhoneTable } = optionalColumns;
     const body = await request.json();
+
     const {
       name,
       email,
       role = 'staff',
       date_of_birth,
       dob,
+      phone = null,
       password = null,
       salary = 0,
-      photo = null,
     } = body || {};
-    const resolvedDob = dob ?? date_of_birth ?? null;
-    const normalizedEmail = String(email || '').trim().toLowerCase();
-    const normalizedRole = String(role || 'staff').trim().toLowerCase();
 
-    if (!name || !normalizedEmail || !password) {
+    const resolvedDob = dob ?? date_of_birth ?? null;
+
+    if (!name || !email || !password) {
       return withCors(
         Response.json({ error: 'Name, email, and password are required' }, { status: 400 }),
       );
     }
-    if (!USER_ROLES.has(normalizedRole)) {
-      return withCors(Response.json({ error: 'Invalid role' }, { status: 400 }));
-    }
-    const numericSalary = Number(salary || 0);
-    if (!Number.isFinite(numericSalary) || numericSalary < 0) {
-      return withCors(Response.json({ error: 'Invalid salary' }, { status: 400 }));
+
+    const insertColumns = ['name', 'email', 'role', 'dob', 'password'];
+    const insertValues = [name, email, role, resolvedDob, password];
+    if (hasSalary) {
+      insertColumns.push('salary');
+      insertValues.push(salary);
     }
 
-    const userId = await nextSequence('app_user', {
-      collectionName: 'app_user',
-      idField: 'user_id',
-    });
-    const doc = {
-      user_id: userId,
-      name: String(name).trim(),
-      email: normalizedEmail,
-      role: normalizedRole,
-      dob: resolvedDob,
-      password: String(password),
-      salary: Math.round(numericSalary),
-      photo: photo || null,
-    };
+    const placeholders = insertColumns.map((_, index) => `$${index + 1}`).join(', ');
 
-    await users.insertOne(doc);
-    return withCors(Response.json(mapStaffDoc(doc), { status: 201 }));
+    const insertResult = await query(
+      `INSERT INTO app_user (${insertColumns.join(', ')})
+       VALUES (${placeholders})
+       RETURNING user_id AS id`,
+      insertValues,
+    );
+
+    const row = insertResult.rows[0];
+    const normalizedPhone = String(phone ?? '').trim();
+    if (hasUserPhoneTable && normalizedPhone) {
+      await query('INSERT INTO user_phone (user_id, phone_no) VALUES ($1, $2)', [row.id, normalizedPhone]);
+    }
+
+    const fullRecord = await selectStaffById(row.id, optionalColumns);
+    return withCors(Response.json(fullRecord.rows[0], { status: 201 }));
   } catch (error) {
     console.error('POST /api/staff failed', error);
-    if (error?.code === 11000) {
-      return withCors(Response.json({ error: 'Email already exists' }, { status: 409 }));
-    }
     const message =
       process.env.NODE_ENV === 'production'
         ? 'Failed to create staff'

@@ -1,27 +1,20 @@
-import { getCollection, nextSequence } from '@/lib/db';
+import { query } from '@/lib/db';
 import { withCors, corsPreflight } from '@/lib/cors';
-
-const mapMenuDoc = (doc) => ({
-  id: Number(doc?.menu_item_id || 0),
-  menuItemId: Number(doc?.menu_item_id || 0),
-  name: doc?.name || '',
-  category: doc?.categories?.[0] || 'Main',
-  price: Number(doc?.price || 0),
-  image: doc?.photo || null,
-  is_available: Boolean(doc?.is_available),
-});
 
 export async function GET() {
   try {
-    const menu = await getCollection('menu_item');
-    const docs = await menu
-      .find(
-        {},
-        { projection: { _id: 0, menu_item_id: 1, name: 1, categories: 1, price: 1, photo: 1, is_available: 1 } },
-      )
-      .sort({ menu_item_id: 1 })
-      .toArray();
-    return withCors(Response.json(docs.map(mapMenuDoc)));
+    const result = await query(
+      `SELECT mi.menu_item_id AS id,
+              mi.menu_item_id AS "menuItemId",
+              mi.name,
+              COALESCE(mi.category, 'Main') AS category,
+              mi.price,
+              mi.photo AS image,
+              mi.is_available
+       FROM menu_item mi
+       ORDER BY mi.menu_item_id ASC`,
+    );
+    return withCors(Response.json(result.rows));
   } catch (error) {
     return withCors(Response.json({ error: 'Failed to fetch menu' }, { status: 500 }));
   }
@@ -29,7 +22,6 @@ export async function GET() {
 
 export async function POST(request) {
   try {
-    const menu = await getCollection('menu_item');
     const body = await request.json();
     const {
       name,
@@ -43,20 +35,13 @@ export async function POST(request) {
       return withCors(Response.json({ error: 'Name is required' }, { status: 400 }));
     }
 
-    const menuItemId = await nextSequence('menu_item', {
-      collectionName: 'menu_item',
-      idField: 'menu_item_id',
-    });
-    const doc = {
-      menu_item_id: menuItemId,
-      name: String(name).trim(),
-      price: Number(price || 0),
-      is_available: Boolean(is_available),
-      photo: image || null,
-      categories: category ? [String(category)] : [],
-    };
-    await menu.insertOne(doc);
-    return withCors(Response.json(mapMenuDoc(doc), { status: 201 }));
+    const result = await query(
+      `INSERT INTO menu_item (name, category, price, is_available, photo)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING menu_item_id AS id, menu_item_id AS "menuItemId", name, category, price, photo AS image, is_available`,
+      [name, category, price, is_available, image],
+    );
+    return withCors(Response.json(result.rows[0], { status: 201 }));
   } catch (error) {
     return withCors(Response.json({ error: 'Failed to create menu item' }, { status: 500 }));
   }
