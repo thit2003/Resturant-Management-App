@@ -27,9 +27,10 @@ export const CashierDashboard = () => {
     }
   };
 
-  const handlePayment = () => {
+  const handlePayment = async () => {
     if (selectedOrder) {
-      recordPayment(selectedOrder.id, paymentMethod);
+      const success = await recordPayment(selectedOrder.id, paymentMethod);
+      if (!success) return;
       updateTableStatus(selectedOrder.tableId, 'free');
       toast.success("Payment Confirmed");
       setSelectedOrder(null);

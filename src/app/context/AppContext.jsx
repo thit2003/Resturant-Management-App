@@ -20,8 +20,32 @@ const INITIAL_STAFF = [
   { id: 'u-4', name: 'Cathy Cashier', email: 'cashier@rest.com', role: 'cashier' },
 ];
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+const API_ROOT = String(import.meta.env.VITE_API_BASE_URL || '/api').replace(
+  /\/+$/,
+  '',
+);
+const API_BASE_URL = API_ROOT.endsWith('/api') ? API_ROOT : `${API_ROOT}/api`;
+const apiUrl = (path) => `${API_BASE_URL}/${String(path || '').replace(/^\/+/, '')}`;
 const TAX_RATE = 0.07;
+
+const readApiError = async (response, fallback) => {
+  const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+
+  if (contentType.includes('application/json')) {
+    const payload = await response.json().catch(() => ({}));
+    return payload?.error || `${fallback} (HTTP ${response.status})`;
+  }
+
+  const text = await response.text().catch(() => '');
+  const cleaned = String(text).replace(/\s+/g, ' ').trim();
+  if (!cleaned) return `${fallback} (HTTP ${response.status})`;
+
+  if (cleaned.toLowerCase().startsWith('<!doctype html') || cleaned.toLowerCase().includes('<html')) {
+    return `${fallback} (HTTP ${response.status}) - backend returned HTML error page`;
+  }
+
+  return `${fallback} (HTTP ${response.status}): ${cleaned.slice(0, 200)}`;
+};
 
 export const AppProvider = ({ children }) => {
   const [user, setUser] = useState(null);
@@ -32,8 +56,10 @@ export const AppProvider = ({ children }) => {
 
   const fetchMenu = async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/menu`);
-      if (!res.ok) throw new Error('Failed to load menu');
+      const res = await fetch(apiUrl('menu'));
+      if (!res.ok) {
+        throw new Error(await readApiError(res, 'Failed to load menu'));
+      }
       const data = await res.json();
       setMenu(data);
     } catch (error) {
@@ -51,45 +77,12 @@ export const AppProvider = ({ children }) => {
 
   const fetchTables = async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/tables`);
-      if (!res.ok) throw new Error('Failed to load tables');
+      const res = await fetch(apiUrl('tables'));
+      if (!res.ok) throw new Error(await readApiError(res, 'Failed to load tables'));
       const data = await res.json();
       setTables(Array.isArray(data) ? data.map(normalizeTable) : []);
     } catch (error) {
       console.error('Failed to load tables', error);
-    }
-  };
-
-  const normalizeOrder = (order) => ({
-    id: String(order?.id || ''),
-    orderId: Number(order?.orderId || 0),
-    tableId: String(order?.tableId || ''),
-    tableNumber: Number(String(order?.tableId || '').replace(/^t-/i, '')) || null,
-    status: String(order?.status || 'pending').toLowerCase(),
-    note: String(order?.note || ''),
-    paymentMethod: order?.paymentMethod ? String(order.paymentMethod).toLowerCase() : undefined,
-    paidAt: order?.paidAt || null,
-    createdAt: order?.createdAt || new Date().toISOString(),
-    subtotal: Number(order?.subtotal || 0),
-    tax: Number(order?.tax || 0),
-    total: Number(order?.total || 0),
-    items: (Array.isArray(order?.items) ? order.items : []).map((item) => ({
-      menuItemId: Number(item?.menuItemId || 0),
-      name: item?.name || 'Unknown',
-      quantity: Number(item?.quantity || 0),
-      price: Number(item?.price || 0),
-      protein: item?.protein || 'None',
-    })),
-  });
-
-  const fetchOrders = async () => {
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/orders`, { cache: 'no-store' });
-      if (!res.ok) throw new Error('Failed to load orders');
-      const data = await res.json();
-      setOrders(Array.isArray(data) ? data.map(normalizeOrder) : []);
-    } catch (error) {
-      console.error('Failed to load orders', error);
     }
   };
 
@@ -99,27 +92,29 @@ export const AppProvider = ({ children }) => {
     fetchOrders();
     const menuIntervalId = setInterval(fetchMenu, 10000);
     const tableIntervalId = setInterval(fetchTables, 10000);
+    const orderIntervalId = setInterval(fetchOrders, 5000);
     return () => {
       clearInterval(menuIntervalId);
       clearInterval(tableIntervalId);
+      clearInterval(orderIntervalId);
     };
   }, []);
 
   // Login using backend validation
   const login = async (email, password) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
+      const response = await fetch(apiUrl('auth/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       });
 
-      const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const message = data?.error || 'Invalid email or password';
+        const message = await readApiError(response, 'Invalid email or password');
         toast.error(message);
         return null;
       }
+      const data = await response.json().catch(() => ({}));
 
       const nextUser = {
         ...data,
@@ -160,6 +155,19 @@ export const AppProvider = ({ children }) => {
   };
 
   // Order Management
+  const fetchOrders = async () => {
+    try {
+      const response = await fetch(apiUrl('orders'), { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, 'Failed to load orders'));
+      }
+      const payload = await response.json().catch(() => []);
+      setOrders(Array.isArray(payload) ? payload : []);
+    } catch (error) {
+      console.error('Failed to fetch orders', error);
+    }
+  };
+
   const createOrder = async (tableId, items, note = "") => {
     try {
       if (!user?.id) {
@@ -178,7 +186,7 @@ export const AppProvider = ({ children }) => {
         })),
       };
 
-      const response = await fetch(`${API_BASE_URL}/api/orders`, {
+      const response = await fetch(apiUrl('orders'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -190,38 +198,11 @@ export const AppProvider = ({ children }) => {
         return null;
       }
 
-      const resolvedItems = (Array.isArray(result.items) ? result.items : []).map((item) => ({
-        menuItemId: item.menuItemId,
-        name: item.name,
-        quantity: Number(item.quantity || 0),
-        price: Number(item.price || 0),
-        protein: item.protein || 'None',
-      }));
-
-      const subtotal = resolvedItems.reduce(
-        (sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0),
-        0,
-      );
-      const tax = subtotal * TAX_RATE;
-      const total = subtotal + tax;
       const table = tables.find((t) => t.id === tableId);
-      const newOrder = {
-        id: result.id || `ord-${Date.now()}`,
-        tableId: result.tableId || tableId,
-        tableNumber: table?.number ?? null,
-        items: resolvedItems,
-        status: 'pending',
-        subtotal,
-        tax,
-        total,
-        note,
-        createdAt: result.createdAt || new Date().toISOString(),
-      };
-
-      setOrders(prev => [...prev, newOrder]);
+      await fetchOrders();
       updateTableStatus(tableId, 'seated');
       toast.success(`Order created for Table ${table?.number ?? ''}`);
-      return newOrder;
+      return result;
     } catch (error) {
       console.error('Create order failed', error);
       toast.error('Failed to create order');
@@ -229,25 +210,60 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  const updateOrderStatus = (orderId, status) => {
-    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status } : o));
-    toast.success(`Order status: ${status}`);
+  const updateOrderStatus = async (orderId, status) => {
+    try {
+      const normalizedStatus = String(status || '').toLowerCase();
+      const isCancel = normalizedStatus === 'canceled' || normalizedStatus === 'cancelled';
+      const response = await fetch(apiUrl(`orders/${orderId}`), {
+        method: isCancel ? 'DELETE' : 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: isCancel ? undefined : JSON.stringify({ status }),
+      });
+      if (!response.ok) {
+        toast.error(await readApiError(response, 'Failed to update order status'));
+        return;
+      }
+      const payload = await response.json().catch(() => ({}));
+      await fetchOrders();
+      if (payload?.deleted) {
+        toast.success('Order canceled');
+      } else {
+        toast.success(`Order status: ${status}`);
+      }
+    } catch (error) {
+      console.error('Update order status failed', error);
+      const message =
+        error?.message && String(error.message).trim()
+          ? `Failed to update order status: ${String(error.message)}`
+          : 'Failed to update order status';
+      toast.error(message);
+    }
   };
 
-  const recordPayment = (orderId, method) => {
-    setOrders(prev =>
-      prev.map(o =>
-        o.id === orderId
-          ? {
-              ...o,
-              status: 'paid',
-              paymentMethod: String(method || '').toLowerCase(),
-              paidAt: new Date().toISOString(),
-            }
-          : o,
-      ),
-    );
-    toast.success(`Payment method: ${method}`);
+  const recordPayment = async (orderId, method) => {
+    try {
+      const response = await fetch(apiUrl(`orders/${orderId}`), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'paid',
+          paymentMethod: String(method || '').toLowerCase(),
+          cashierUserId: user?.id || null,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        toast.error(payload?.error || 'Failed to record payment');
+        return false;
+      }
+      await fetchOrders();
+      toast.success(`Payment method: ${method}`);
+      return true;
+    } catch (error) {
+      console.error('Record payment failed', error);
+      toast.error('Failed to record payment');
+      return false;
+    }
   };
 
   const analytics = React.useMemo(() => {
@@ -330,7 +346,7 @@ export const AppProvider = ({ children }) => {
   const updateProfile = async (updates) => {
     if (!user?.id) return null;
     try {
-      const response = await fetch(`${API_BASE_URL}/api/staff/${user.id}`, {
+      const response = await fetch(apiUrl(`staff/${user.id}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates),
@@ -362,7 +378,7 @@ export const AppProvider = ({ children }) => {
     <AppContext.Provider value={{
       user, login, logout,
       menu, fetchMenu, addMenuItem, updateMenuItem, deleteMenuItem,
-      orders, fetchOrders, createOrder, updateOrderStatus, recordPayment,
+      orders, createOrder, updateOrderStatus, recordPayment,
       tables, fetchTables, updateTableStatus,
       staff, addStaff,
       updateProfile,

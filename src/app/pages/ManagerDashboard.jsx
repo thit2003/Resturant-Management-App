@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'motion/react'
-import { X } from 'lucide-react'
+import { CalendarDays, ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   BarChart,
@@ -20,19 +20,26 @@ import {
 } from '@/app/components/ui/chart'
 import { useApp } from '@/app/context/AppContext'
 
-const API_ROOT = String(import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001').replace(
+const API_ROOT = String(import.meta.env.VITE_API_BASE_URL || '/api').replace(
   /\/+$/,
   '',
 );
 const API_BASE = API_ROOT.endsWith('/api') ? API_ROOT : `${API_ROOT}/api`;
 const apiUrl = (path) => `${API_BASE}/${String(path || '').replace(/^\/+/, '')}`;
 const getTableRouteId = (id) => String(id || '').replace(/^t-/i, '');
+const normalizeEntityId = (id) => {
+  const numeric = Number(id);
+  return Number.isFinite(numeric) ? numeric : String(id ?? '');
+};
 
 const readErrorMessage = async (res, fallback) => {
   const contentType = String(res.headers.get('content-type') || '').toLowerCase();
   if (contentType.includes('application/json')) {
     const payload = await res.json().catch(() => ({}));
     return payload?.error || `${fallback} (HTTP ${res.status})`;
+  }
+  if (contentType.includes('text/html')) {
+    return `${fallback} (HTTP ${res.status}). Backend returned an HTML error page; check backend server logs.`;
   }
   const rawText = await res.text().catch(() => '');
   const text = rawText.trim();
@@ -50,13 +57,88 @@ const normalizeStaffMember = (person) => ({
   photo: person?.photo || null,
 });
 
+const getPreviousMonthValue = () => {
+  const date = new Date();
+  date.setDate(1);
+  date.setMonth(date.getMonth() - 1);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+};
+
+const getCurrentMonthValue = () => {
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+};
+
+const isFutureMonthValue = (monthValue) => {
+  const [yearRaw, monthRaw] = String(monthValue || '').split('-');
+  const year = Number.parseInt(yearRaw, 10);
+  const month = Number.parseInt(monthRaw, 10);
+  if (!Number.isInteger(year) || !Number.isInteger(month)) return false;
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+  return year > currentYear || (year === currentYear && month > currentMonth);
+};
+
+const shiftMonthValue = (monthValue, monthDelta) => {
+  const [yearRaw, monthRaw] = String(monthValue || '').split('-');
+  const year = Number.parseInt(yearRaw, 10);
+  const month = Number.parseInt(monthRaw, 10);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return monthValue;
+  }
+  const date = new Date(year, month - 1, 1);
+  date.setMonth(date.getMonth() + monthDelta);
+  const nextYear = date.getFullYear();
+  const nextMonth = String(date.getMonth() + 1).padStart(2, '0');
+  return `${nextYear}-${nextMonth}`;
+};
+
+const formatMonthValue = (monthValue) => {
+  const [yearRaw, monthRaw] = String(monthValue || '').split('-');
+  const year = Number.parseInt(yearRaw, 10);
+  const month = Number.parseInt(monthRaw, 10);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return '';
+  }
+  return new Date(year, month - 1, 1).toLocaleDateString([], {
+    month: 'long',
+    year: 'numeric',
+  });
+};
+
+const getMonthParts = (monthValue) => {
+  const [yearRaw, monthRaw] = String(monthValue || '').split('-');
+  const year = Number.parseInt(yearRaw, 10);
+  const month = Number.parseInt(monthRaw, 10);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return null;
+  }
+  return { year, month };
+};
+
+const buildMonthValue = (year, month) => {
+  const normalizedYear = Number.parseInt(String(year), 10);
+  const normalizedMonth = Number.parseInt(String(month), 10);
+  if (!Number.isInteger(normalizedYear) || !Number.isInteger(normalizedMonth)) return '';
+  if (normalizedMonth < 1 || normalizedMonth > 12) return '';
+  return `${normalizedYear}-${String(normalizedMonth).padStart(2, '0')}`;
+};
+
+const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
 // --- Main Component ---
 export const ManagerDashboard = () => {
-  const { analytics, orders } = useApp();
+  const { analytics, orders, menu: appMenu, tables: appTables, staff: appStaff } = useApp();
   const location = useLocation();
   const [menuItems, setMenuItems] = useState([]);
   const [staffList, setStaffList] = useState([]);
   const [tableList, setTableList] = useState([]);
+  const [ordersFromDb, setOrdersFromDb] = useState([]);
   const [isMenuLoading, setIsMenuLoading] = useState(false);
   const [isStaffLoading, setIsStaffLoading] = useState(false);
   const [isTableLoading, setIsTableLoading] = useState(false);
@@ -73,30 +155,16 @@ export const ManagerDashboard = () => {
   };
 
   const view = getActiveView();
-
-  const activeOrderTableIds = useMemo(() => {
-    const activeStatuses = new Set(['paid', 'canceled']);
-    return new Set(
-      orders
-        .filter((order) => !activeStatuses.has(String(order?.status || '').toLowerCase()))
-        .map((order) => String(order?.tableId || '')),
-    );
-  }, [orders]);
-
-  const tableListWithStatus = useMemo(
-    () =>
-      tableList.map((table) => ({
-        ...table,
-        status: activeOrderTableIds.has(String(table?.id || '')) ? 'seated' : table?.status || 'free',
-      })),
-    [tableList, activeOrderTableIds],
-  );
+  const effectiveMenuItems = menuItems.length > 0 ? menuItems : appMenu;
+  const effectiveTableList = tableList.length > 0 ? tableList : appTables;
+  const effectiveStaffList = staffList.length > 0 ? staffList : appStaff;
+  const effectiveOrders = orders.length > 0 ? orders : ordersFromDb;
 
   const fetchMenu = async () => {
     setIsMenuLoading(true);
     try {
       const res = await fetch(apiUrl('menu'), { cache: 'no-store' });
-      if (!res.ok) throw new Error('Failed to load menu');
+      if (!res.ok) throw new Error(await readErrorMessage(res, 'Failed to load menu items'));
       const data = await res.json();
       setMenuItems(
         (Array.isArray(data) ? data : []).map((item) => ({
@@ -106,7 +174,7 @@ export const ManagerDashboard = () => {
         })),
       );
     } catch (error) {
-      toast.error('Failed to load menu items');
+      toast.error(error?.message || 'Failed to load menu items');
     } finally {
       setIsMenuLoading(false);
     }
@@ -139,9 +207,22 @@ export const ManagerDashboard = () => {
       const data = await res.json();
       setTableList(data);
     } catch (error) {
-      toast.error('Failed to load tables');
+      if ((tableList?.length || 0) === 0 && (appTables?.length || 0) === 0) {
+        toast.error('Failed to load tables');
+      }
     } finally {
       setIsTableLoading(false);
+    }
+  };
+
+  const fetchOrdersForManager = async () => {
+    try {
+      const res = await fetch(apiUrl('orders'), { cache: 'no-store' });
+      if (!res.ok) throw new Error(await readErrorMessage(res, 'Failed to load orders'));
+      const data = await res.json();
+      setOrdersFromDb(Array.isArray(data) ? data : []);
+    } catch (error) {
+      // Keep silent here to avoid noisy toasts; reports/tables can still use context orders.
     }
   };
 
@@ -149,10 +230,14 @@ export const ManagerDashboard = () => {
     fetchMenu();
     fetchStaff();
     fetchTables();
+    fetchOrdersForManager();
   }, []);
 
   useEffect(() => {
     if (view === 'menu') fetchMenu();
+    if (view === 'staff') fetchStaff();
+    if (view === 'tables') fetchTables();
+    if (view === 'tables' || view === 'report') fetchOrdersForManager();
   }, [view]);
 
   const addMenuItem = async (item) => {
@@ -163,8 +248,8 @@ export const ManagerDashboard = () => {
         body: JSON.stringify(item),
       });
       if (!res.ok) throw new Error(await readErrorMessage(res, 'Failed to create menu item'));
-      const created = await res.json();
-      setMenuItems((prev) => [...prev, created]);
+      await res.json();
+      await fetchMenu();
       toast.success('Menu item added');
     } catch (error) {
       toast.error(error.message || 'Failed to add menu item');
@@ -179,8 +264,8 @@ export const ManagerDashboard = () => {
         body: JSON.stringify(updates),
       });
       if (!res.ok) throw new Error(await readErrorMessage(res, 'Failed to update menu item'));
-      const updated = await res.json();
-      setMenuItems((prev) => prev.map((item) => (item.id === id ? updated : item)));
+      await res.json();
+      await fetchMenu();
       toast.success('Menu item updated');
     } catch (error) {
       toast.error(error.message || 'Failed to update menu item');
@@ -190,11 +275,11 @@ export const ManagerDashboard = () => {
   const deleteMenuItem = async (id) => {
     try {
       const res = await fetch(apiUrl(`menu/${id}`), { method: 'DELETE' });
-      if (!res.ok) throw new Error('Failed to delete menu item');
-      setMenuItems((prev) => prev.filter((item) => item.id !== id));
+      if (!res.ok) throw new Error(await readErrorMessage(res, 'Failed to delete menu item'));
+      await fetchMenu();
       toast.success('Menu item deleted');
     } catch (error) {
-      toast.error('Failed to delete menu item');
+      toast.error(error.message || 'Failed to delete menu item');
     }
   };
 
@@ -235,11 +320,12 @@ export const ManagerDashboard = () => {
   const deleteStaff = async (id) => {
     try {
       const res = await fetch(apiUrl(`staff/${id}`), { method: 'DELETE' });
-      if (!res.ok) throw new Error('Failed to delete staff');
-      setStaffList((prev) => prev.filter((item) => item.id !== id));
+      if (!res.ok) throw new Error(await readErrorMessage(res, 'Failed to delete staff'));
+      const targetId = normalizeEntityId(id);
+      setStaffList((prev) => prev.filter((item) => normalizeEntityId(item?.id) !== targetId));
       toast.success('Staff removed');
     } catch (error) {
-      toast.error('Failed to delete staff');
+      toast.error(error.message || 'Failed to delete staff');
     }
   };
 
@@ -251,8 +337,8 @@ export const ManagerDashboard = () => {
         body: JSON.stringify(table),
       });
       if (!res.ok) throw new Error(await readErrorMessage(res, 'Failed to create table'));
-      const created = await res.json();
-      setTableList((prev) => [...prev, created]);
+      await res.json();
+      await fetchTables();
       toast.success('Table added');
     } catch (error) {
       toast.error(error.message || 'Failed to add table');
@@ -268,11 +354,23 @@ export const ManagerDashboard = () => {
         body: JSON.stringify(updates),
       });
       if (!res.ok) throw new Error(await readErrorMessage(res, 'Failed to update table'));
-      const updated = await res.json();
-      setTableList((prev) => prev.map((item) => (item.id === id ? updated : item)));
+      await res.json();
+      await fetchTables();
       toast.success('Table updated');
     } catch (error) {
       toast.error(error.message || 'Failed to update table');
+    }
+  };
+
+  const deleteTable = async (id) => {
+    try {
+      const routeId = getTableRouteId(id);
+      const res = await fetch(apiUrl(`tables/${routeId}`), { method: 'DELETE' });
+      if (!res.ok) throw new Error(await readErrorMessage(res, 'Failed to delete table'));
+      await fetchTables();
+      toast.success('Table removed');
+    } catch (error) {
+      toast.error(error.message || 'Failed to delete table');
     }
   };
 
@@ -289,7 +387,7 @@ export const ManagerDashboard = () => {
             {view === 'dashboard' && <DashboardHome analytics={analytics} />}
             {view === 'menu' && (
               <MenuManager
-                menu={menuItems}
+                menu={effectiveMenuItems}
                 isLoading={isMenuLoading}
                 onDelete={deleteMenuItem}
                 onAdd={addMenuItem}
@@ -299,7 +397,7 @@ export const ManagerDashboard = () => {
             )}
             {view === 'staff' && (
               <StaffManager
-                staff={staffList}
+                staff={effectiveStaffList}
                 isLoading={isStaffLoading}
                 hasLoadedStaff={hasLoadedStaff}
                 staffLoadError={staffLoadError}
@@ -311,14 +409,16 @@ export const ManagerDashboard = () => {
             )}
             {view === 'tables' && (
               <TableManager
-                tables={tableListWithStatus}
+                tables={effectiveTableList}
+                orders={effectiveOrders}
                 isLoading={isTableLoading}
                 onAdd={addTable}
                 onUpdate={updateTable}
+                onDelete={deleteTable}
                 onRefresh={fetchTables}
               />
             )}
-            {view === 'report' && <Reports analytics={analytics} orders={orders} />}
+            {view === 'report' && <Reports analytics={analytics} orders={effectiveOrders} />}
          </motion.div>
        </AnimatePresence>
     </div>
@@ -439,13 +539,11 @@ const MenuManager = ({ menu, isLoading, onDelete, onAdd, onUpdate, onRefresh }) 
   const [editingItem, setEditingItem] = useState(null);
   const [isAdding, setIsAdding] = useState(false);
   const categories = Array.from(
-    new Set([
-      "Main",
-      "Desserts",
-      "Appetizer",
-      "Drinks",
-      ...menu.map((item) => item.category).filter(Boolean),
-    ]),
+    new Set(
+      menu
+        .map((item) => String(item?.category || '').trim())
+        .filter(Boolean),
+    ),
   );
 
   if (editingItem || isAdding) {
@@ -453,12 +551,13 @@ const MenuManager = ({ menu, isLoading, onDelete, onAdd, onUpdate, onRefresh }) 
        <MenuEditor 
          item={editingItem} 
          categories={categories}
+         onDelete={onDelete}
          onClose={() => { setEditingItem(null); setIsAdding(false); }} 
          onSave={(newItem) => { 
             if (isAdding) {
-              onAdd({ ...newItem, category: newItem.category || 'Main' });
+              onAdd(newItem);
             } else if (editingItem) {
-              onUpdate(editingItem.id, newItem);
+              onUpdate(editingItem.id ?? editingItem.menuItemId, newItem);
             }
             setEditingItem(null);
             setIsAdding(false);
@@ -522,10 +621,10 @@ const MenuManager = ({ menu, isLoading, onDelete, onAdd, onUpdate, onRefresh }) 
   );
 };
 
-const MenuEditor = ({ item, categories, onClose, onSave }) => {
+const MenuEditor = ({ item, categories, onDelete, onClose, onSave }) => {
   const [name, setName] = useState(item?.name || 'New Item');
   const [price, setPrice] = useState(item?.price || '0');
-  const [category, setCategory] = useState(item?.category || 'Main dish');
+  const [category, setCategory] = useState(String(item?.category || '').trim());
   const [isAddingCategory, setIsAddingCategory] = useState(false);
   const [newCategory, setNewCategory] = useState('');
   const [image, setImage] = useState(item?.image || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500');
@@ -579,10 +678,22 @@ const MenuEditor = ({ item, categories, onClose, onSave }) => {
                   Upload
                 </button>
                 <button
-                  onClick={() => setImage('')}
+                  onClick={async () => {
+                    const itemId = item?.id ?? item?.menuItemId;
+                    if (!itemId) {
+                      setImage('');
+                      return;
+                    }
+                    const confirmed = window.confirm(
+                      `Delete "${item?.name || 'this menu item'}"? This action cannot be undone.`,
+                    );
+                    if (!confirmed) return;
+                    await onDelete(itemId);
+                    onClose();
+                  }}
                   className="bg-[#E5E7EB] px-12 py-3 rounded-full shadow-sm text-black font-semibold text-2xl hover:bg-gray-200 border border-gray-300 transition-all"
                 >
-                  Remove
+                  {item ? 'Delete Item' : 'Remove Image'}
                 </button>
              </div>
           </div>
@@ -624,6 +735,9 @@ const MenuEditor = ({ item, categories, onClose, onSave }) => {
                  }}
                  className="bg-white text-[#9F1E22] font-bold text-xl px-4 py-2 rounded-xl border border-[#9F1E22]/20"
                >
+                 <option value="" disabled>
+                   Select category
+                 </option>
                  {categories.map((cat) => (
                    <option key={cat} value={cat}>
                      {cat}
@@ -926,13 +1040,27 @@ const StaffEditor = ({ staff, onClose, onSave }) => {
 }
 
 // 4. Table Manager
-const TableManager = ({ tables, isLoading, onAdd, onUpdate, onRefresh }) => {
+const TableManager = ({ tables, orders = [], isLoading, onAdd, onUpdate, onDelete, onRefresh }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [isAdding, setIsAdding] = useState(false);
   const [editingTable, setEditingTable] = useState(null);
   const [selectedTableId, setSelectedTableId] = useState(null);
 
   const selectedTable = tables.find((table) => table.id === selectedTableId);
+  const tableStatusById = useMemo(() => {
+    const statuses = new Map(
+      (tables || []).map((table) => [table.id, String(table?.status || 'free').toLowerCase()]),
+    );
+    for (const order of orders || []) {
+      const orderStatus = String(order?.status || '').toLowerCase();
+      if (!['paid', 'canceled'].includes(orderStatus)) {
+        statuses.set(order?.tableId, 'seated');
+      }
+    }
+    return statuses;
+  }, [orders, tables]);
+  const isSelectedTableSeated =
+    selectedTable && tableStatusById.get(selectedTable.id) === 'seated';
 
   if (isEditing || isAdding) {
     return (
@@ -947,6 +1075,11 @@ const TableManager = ({ tables, isLoading, onAdd, onUpdate, onRefresh }) => {
           if (isAdding) {
             onAdd(payload);
           } else if (editingTable) {
+            const currentStatus = tableStatusById.get(editingTable.id) || 'free';
+            if (currentStatus === 'seated') {
+              toast.error('Cannot edit a seated table');
+              return;
+            }
             onUpdate(editingTable.id, payload);
           }
           setIsEditing(false);
@@ -974,18 +1107,21 @@ const TableManager = ({ tables, isLoading, onAdd, onUpdate, onRefresh }) => {
           {isLoading && (
             <div className="p-6 text-lg font-semibold text-[#9F1E22]">Loading tables...</div>
           )}
-          {tables.map((table, i) => (
-            <div
-              key={table.id}
-              onClick={() => setSelectedTableId(table.id)}
-              className={`grid grid-cols-12 text-black text-lg font-medium p-4 border-b border-gray-200 hover:bg-gray-50 transition-colors items-center cursor-pointer ${selectedTableId === table.id ? 'bg-[#FFF7CC]' : ''}`}
-            >
-              <div className="col-span-2 pl-4">{table.tableId || i + 1}</div>
-              <div className="col-span-4 border-l border-gray-200 pl-4">{table.number}</div>
-              <div className="col-span-3 border-l border-gray-200 pl-4">{table.seats}</div>
-              <div className="col-span-3 border-l border-gray-200 pl-4 capitalize">{table.status || 'free'}</div>
-            </div>
-          ))}
+          {tables.map((table, i) => {
+            const tableStatus = tableStatusById.get(table.id) || 'free';
+            return (
+              <div
+                key={table.id}
+                onClick={() => setSelectedTableId(table.id)}
+                className={`grid grid-cols-12 text-black text-lg font-medium p-4 border-b border-gray-200 hover:bg-gray-50 transition-colors items-center cursor-pointer ${selectedTableId === table.id ? 'bg-[#FFF7CC]' : ''}`}
+              >
+                <div className="col-span-2 pl-4">{table.tableId || i + 1}</div>
+                <div className="col-span-4 border-l border-gray-200 pl-4">{table.number}</div>
+                <div className="col-span-3 border-l border-gray-200 pl-4">{table.seats}</div>
+                <div className="col-span-3 border-l border-gray-200 pl-4 capitalize">{tableStatus}</div>
+              </div>
+            );
+          })}
           {[1, 2, 3, 4].map((i) => (
             <div key={`t-e-${i}`} className="grid grid-cols-12 p-6 border-b border-gray-100">
               <div className="col-span-1" />
@@ -995,19 +1131,54 @@ const TableManager = ({ tables, isLoading, onAdd, onUpdate, onRefresh }) => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full pt-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-6 w-full pt-4">
         <button
           onClick={() => {
             if (!selectedTable) {
               toast.info('Select a table first');
               return;
             }
+            if (isSelectedTableSeated) {
+              toast.info('Seated table cannot be edited');
+              return;
+            }
             setEditingTable(selectedTable);
             setIsEditing(true);
           }}
-          className="bg-[#FFD700] hover:bg-[#FCD34D] text-black font-bold text-xl py-4 rounded-full shadow-lg transition-transform active:scale-95"
+          disabled={isSelectedTableSeated}
+          className={`text-black font-bold text-xl py-4 rounded-full shadow-lg transition-transform ${
+            isSelectedTableSeated
+              ? 'bg-[#FFD700]/50 cursor-not-allowed'
+              : 'bg-[#FFD700] hover:bg-[#FCD34D] active:scale-95'
+          }`}
         >
           Edit
+        </button>
+        <button
+          onClick={async () => {
+            if (!selectedTable) {
+              toast.info('Select a table first');
+              return;
+            }
+            if (isSelectedTableSeated) {
+              toast.info('Seated table cannot be removed');
+              return;
+            }
+            const confirmed = window.confirm(
+              `Delete table "${selectedTable.number}"? This action cannot be undone.`,
+            );
+            if (!confirmed) return;
+            await onDelete(selectedTable.id);
+            setSelectedTableId(null);
+          }}
+          disabled={isSelectedTableSeated}
+          className={`text-black font-bold text-xl py-4 rounded-full shadow-lg transition-transform ${
+            isSelectedTableSeated
+              ? 'bg-[#FFD700]/50 cursor-not-allowed'
+              : 'bg-[#FFD700] hover:bg-[#FCD34D] active:scale-95'
+          }`}
+        >
+          Remove
         </button>
         <button
           onClick={onRefresh}
@@ -1092,9 +1263,12 @@ const TableEditor = ({ table, onClose, onSave }) => {
 // 5. Reports
 const Reports = ({ analytics, orders }) => {
   const [reportType, setReportType] = useState('monthly');
+  const [selectedReportMonth, setSelectedReportMonth] = useState(getCurrentMonthValue);
   const [monthlyMenuRowsFromDb, setMonthlyMenuRowsFromDb] = useState([]);
   const [isMonthlyMenuLoading, setIsMonthlyMenuLoading] = useState(false);
   const [monthlyMenuError, setMonthlyMenuError] = useState('');
+  const [isMonthPickerOpen, setIsMonthPickerOpen] = useState(false);
+  const [pickerYear, setPickerYear] = useState(new Date().getFullYear());
   const validOrders = useMemo(
     () => orders.filter((order) => order.status !== 'canceled'),
     [orders],
@@ -1103,6 +1277,7 @@ const Reports = ({ analytics, orders }) => {
     () => validOrders.filter((order) => order.status === 'paid'),
     [validOrders],
   );
+  const hasAutoSelectedMonthRef = useRef(false);
   const dailyRows = useMemo(
     () =>
       paidOrders.flatMap((order) =>
@@ -1122,22 +1297,69 @@ const Reports = ({ analytics, orders }) => {
     [paidOrders, analytics.taxRate],
   );
   const dailyTotal = dailyRows.reduce((sum, row) => sum + row.total, 0);
+  const nextMonthValue = shiftMonthValue(selectedReportMonth, 1);
+  const isNextMonthDisabled = isFutureMonthValue(nextMonthValue);
+  const currentDate = new Date();
+  const currentYear = currentDate.getFullYear();
+  const currentMonth = currentDate.getMonth() + 1;
+  const selectedMonthParts = getMonthParts(selectedReportMonth);
+  const selectedYear = selectedMonthParts?.year ?? currentYear;
+  const selectedMonthNumber = selectedMonthParts?.month ?? currentMonth;
+  const minYear = 1900;
+  const yearOptions = useMemo(() => {
+    const years = [];
+    for (let year = currentYear; year >= minYear; year -= 1) {
+      years.push(year);
+    }
+    return years;
+  }, [currentYear]);
+  const applySelectedMonth = (nextValue) => {
+    if (!nextValue) return;
+    if (isFutureMonthValue(nextValue)) {
+      toast.error('Future month is not allowed');
+      return;
+    }
+    setSelectedReportMonth(nextValue);
+  };
+
+  useEffect(() => {
+    if (hasAutoSelectedMonthRef.current) return;
+    if (paidOrders.length === 0) return;
+    const latestPaidDate = paidOrders.reduce((latest, order) => {
+      const next = new Date(order.paidAt || order.createdAt || 0);
+      return Number(next) > Number(latest) ? next : latest;
+    }, new Date(0));
+    if (Number.isNaN(Number(latestPaidDate)) || Number(latestPaidDate) <= 0) return;
+    const year = latestPaidDate.getFullYear();
+    const month = String(latestPaidDate.getMonth() + 1).padStart(2, '0');
+    setSelectedReportMonth(`${year}-${month}`);
+    hasAutoSelectedMonthRef.current = true;
+  }, [paidOrders]);
 
   const fetchMonthlyMenuReport = async () => {
     setIsMonthlyMenuLoading(true);
     setMonthlyMenuError('');
     try {
-      const res = await fetch(apiUrl('reports/monthly-menu'), { cache: 'no-store' });
+      const [year, month] = String(selectedReportMonth || '').split('-');
+      const params = new URLSearchParams();
+      if (year && month) {
+        params.set('year', year);
+        params.set('month', String(Number(month)));
+      }
+      const queryString = params.toString();
+      const reportPath = queryString
+        ? `reports/monthly-menu?${queryString}`
+        : 'reports/monthly-menu';
+      const res = await fetch(apiUrl(reportPath), { cache: 'no-store' });
       if (!res.ok) throw new Error(await readErrorMessage(res, 'Failed to load monthly menu report'));
       const data = await res.json();
-      setMonthlyMenuRowsFromDb(
-        (Array.isArray(data) ? data : []).map((row) => ({
-          month: row.month,
-          item: row.item,
-          quantity: Number(row.quantity || 0),
-          revenue: Number(row.revenue || 0),
-        })),
-      );
+      const mapped = (Array.isArray(data) ? data : []).map((row) => ({
+        month: row.month,
+        item: row.item,
+        quantity: Number(row.quantity || 0),
+        revenue: Number(row.revenue || 0),
+      }));
+      setMonthlyMenuRowsFromDb(mapped);
     } catch (error) {
       setMonthlyMenuError(error?.message || 'Failed to load monthly menu report');
     } finally {
@@ -1151,7 +1373,7 @@ const Reports = ({ analytics, orders }) => {
     fetchMonthlyMenuReport();
     const intervalId = setInterval(fetchMonthlyMenuReport, 10000);
     return () => clearInterval(intervalId);
-  }, [reportType]);
+  }, [reportType, selectedReportMonth]);
 
   const monthlyGrandTotals = useMemo(
     () =>
@@ -1223,6 +1445,90 @@ const Reports = ({ analytics, orders }) => {
             </>
          ) : (
             <>
+              <div className="mb-5 flex justify-end px-1">
+                <div className="flex w-full items-center justify-between rounded-xl bg-[#E5E7EB] px-3 py-2 text-[#111827] shadow-sm">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedReportMonth((prev) => shiftMonthValue(prev, -1))}
+                    className="rounded-md p-2 transition-colors hover:bg-black/5"
+                    aria-label="Previous month"
+                  >
+                    <ChevronLeft size={24} />
+                  </button>
+                  <div className="flex items-center gap-3 text-3xl font-semibold">
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPickerYear(selectedYear);
+                          setIsMonthPickerOpen((prev) => !prev);
+                        }}
+                        className="rounded-md p-1 transition-colors hover:bg-black/5"
+                        aria-label="Open month and year picker"
+                      >
+                        <CalendarDays size={24} />
+                      </button>
+                      {isMonthPickerOpen && (
+                        <div className="absolute left-0 top-11 z-20 w-72 rounded-xl border border-black/10 bg-white p-3 shadow-xl">
+                          <div className="mb-3">
+                            <select
+                              value={pickerYear}
+                              onChange={(e) => setPickerYear(Number.parseInt(e.target.value, 10))}
+                              className="w-full rounded-md border border-black/15 px-3 py-2 text-base font-semibold outline-none focus:border-[#9F1E22]"
+                            >
+                              {yearOptions.map((year) => (
+                                <option key={year} value={year}>
+                                  {year}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="grid grid-cols-4 gap-2">
+                            {MONTH_LABELS.map((label, index) => {
+                              const month = index + 1;
+                              const monthValue = buildMonthValue(pickerYear, month);
+                              const isDisabled = isFutureMonthValue(monthValue);
+                              const isSelected = pickerYear === selectedYear && month === selectedMonthNumber;
+                              return (
+                                <button
+                                  key={`${pickerYear}-${label}`}
+                                  type="button"
+                                  onClick={() => {
+                                    if (isDisabled) return;
+                                    applySelectedMonth(monthValue);
+                                    setIsMonthPickerOpen(false);
+                                  }}
+                                  disabled={isDisabled}
+                                  className={`rounded-md border px-2 py-2 text-sm font-semibold transition-colors ${
+                                    isSelected
+                                      ? 'border-[#9F1E22] bg-[#9F1E22] text-white'
+                                      : 'border-black/15 bg-white text-black hover:bg-[#FFF5D0]'
+                                  } disabled:cursor-not-allowed disabled:opacity-35`}
+                                >
+                                  {label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <span>{formatMonthValue(selectedReportMonth)}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isNextMonthDisabled) return;
+                      setSelectedReportMonth(nextMonthValue);
+                    }}
+                    disabled={isNextMonthDisabled}
+                    className="rounded-md p-2 transition-colors hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                    aria-label="Next month"
+                  >
+                    <ChevronRight size={24} />
+                  </button>
+                </div>
+              </div>
               <div className="rounded-2xl border border-[#9F1E22]/10 overflow-hidden shadow-sm">
                 <div className="grid grid-cols-[1.2fr_3.8fr_2fr_2fr] bg-gradient-to-r from-[#FFD700] to-[#FCD34D] text-black font-black text-base uppercase tracking-wide px-6 py-5">
                   <div>Month</div>

@@ -49,11 +49,21 @@ export const StaffDashboard = () => {
   ];
   const isDessertCategory = (category) =>
     String(category || "").toLowerCase().startsWith("dessert");
+  const isDrinkCategory = (category) =>
+    String(category || "").toLowerCase().startsWith("drink");
+  const isNoProteinCategory = (category) =>
+    isDessertCategory(category) || isDrinkCategory(category);
+  const getSelectedProtein = (item) =>
+    isNoProteinCategory(item?.category) ? "None" : proteinByItem[item.id] || "None";
 
   const categories = useMemo(() => {
-    const defaults = ["Main", "Appetizer", "Desserts", "Drinks"];
-    const fromMenu = menu.map((item) => item.category).filter(Boolean);
-    const unique = Array.from(new Set([...defaults, ...fromMenu]));
+    const unique = Array.from(
+      new Set(
+        menu
+          .map((item) => String(item?.category || '').trim())
+          .filter(Boolean),
+      ),
+    );
     return ["All", ...unique];
   }, [menu]);
 
@@ -73,6 +83,18 @@ export const StaffDashboard = () => {
   const tableOrders = orders.filter(
     (o) => o.tableId === selectedTableId,
   );
+  const tableLiveStatus = useMemo(() => {
+    const map = new Map();
+    for (const table of tables) {
+      const hasActiveOrder = orders.some((order) => {
+        if (order.tableId !== table.id) return false;
+        const status = String(order.status || "").toLowerCase();
+        return status !== "paid" && status !== "canceled";
+      });
+      map.set(table.id, hasActiveOrder ? "seated" : "free");
+    }
+    return map;
+  }, [orders, tables]);
 
   const handleTableClick = (table) => {
     setSelectedTableId(table.id);
@@ -80,7 +102,7 @@ export const StaffDashboard = () => {
   };
 
   const addToCart = (item) => {
-    const protein = proteinByItem[item.id] || "None";
+    const protein = getSelectedProtein(item);
     setCart((prev) => {
       const existing = prev.find(
         (i) => i.menuItemId === item.id && i.protein === protein,
@@ -307,7 +329,7 @@ export const StaffDashboard = () => {
                   ฿{Number(order.total).toFixed(2)}
                 </div>
                 <div className="col-span-3 text-right">
-                  {order.status === "pending" ? (
+                  {["pending", "new"].includes(String(order.status || "").toLowerCase()) ? (
                     <button
                       onClick={() => updateOrderStatus(order.id, "canceled")}
                       className="bg-red-100 text-red-600 px-4 py-2 rounded-full font-bold hover:bg-red-200"
@@ -444,7 +466,7 @@ export const StaffDashboard = () => {
                         onClick={() =>
                           updateCartQuantity(
                             item.id,
-                            proteinByItem[item.id] || "None",
+                            getSelectedProtein(item),
                             1,
                           )
                         }
@@ -461,7 +483,7 @@ export const StaffDashboard = () => {
                         onClick={() =>
                           updateCartQuantity(
                             item.id,
-                            proteinByItem[item.id] || "None",
+                            getSelectedProtein(item),
                             -1,
                           )
                         }
@@ -472,23 +494,28 @@ export const StaffDashboard = () => {
                     </div>
                     <div className="flex items-center gap-3 flex-1">
                       <div className="flex flex-col gap-1">
-                        <select
-                          value={proteinByItem[item.id] || "None"}
-                          onChange={(e) =>
-                            setProteinByItem((prev) => ({
-                              ...prev,
-                              [item.id]: e.target.value,
-                            }))
-                          }
-                          disabled={isDessertCategory(item.category)}
-                          className="bg-white/90 text-black text-sm font-bold rounded-full px-3 py-2 border border-white/40 disabled:opacity-60 disabled:cursor-not-allowed"
-                        >
-                          {proteinOptions.map((option) => (
-                            <option key={option} value={option}>
-                              {option}
-                            </option>
-                          ))}
-                        </select>
+                        {isNoProteinCategory(item.category) ? (
+                          <div className="bg-white/70 text-black text-xs font-bold rounded-full px-3 py-2 border border-white/40">
+                            No protein options
+                          </div>
+                        ) : (
+                          <select
+                            value={proteinByItem[item.id] || "None"}
+                            onChange={(e) =>
+                              setProteinByItem((prev) => ({
+                                ...prev,
+                                [item.id]: e.target.value,
+                              }))
+                            }
+                            className="bg-white/90 text-black text-sm font-bold rounded-full px-3 py-2 border border-white/40"
+                          >
+                            {proteinOptions.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>
+                        )}
                       </div>
                       <button
                         onClick={() => addToCart(item)}
@@ -527,43 +554,46 @@ export const StaffDashboard = () => {
       </div>
 
       <div className="space-y-6 w-full">
-        {tables.map((table) => (
-          <motion.div
-            key={table.id}
-            onClick={() => handleTableClick(table)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                handleTableClick(table);
-              }
-            }}
-            role="button"
-            tabIndex={0}
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            className={`
-              w-full py-6 px-12 rounded-full flex justify-between items-center text-2xl font-medium shadow-md transition-colors
-              ${table.status === "free" ? "bg-[#C1F2C6] text-black" : "bg-[#FFF9C4] text-black"}
-            `}
-          >
-            <span>Table {table.number}</span>
-            <span className="flex items-center gap-6">
-              <span className="text-sm text-black/60">
-                Capacity: {table.seats}
+        {tables.map((table) => {
+          const currentStatus = tableLiveStatus.get(table.id) || "free";
+          return (
+            <motion.div
+              key={table.id}
+              onClick={() => handleTableClick(table)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  handleTableClick(table);
+                }
+              }}
+              role="button"
+              tabIndex={0}
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              className={`
+                w-full py-6 px-12 rounded-full flex justify-between items-center text-2xl font-medium shadow-md transition-colors
+                ${currentStatus === "free" ? "bg-[#C1F2C6] text-black" : "bg-[#FFF9C4] text-black"}
+              `}
+            >
+              <span>Table {table.number}</span>
+              <span className="flex items-center gap-6">
+                <span className="text-sm text-black/60">
+                  Capacity: {table.seats}
+                </span>
+                <button
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setSelectedTableId(table.id);
+                    setViewMode("table-orders");
+                  }}
+                  className="bg-white/70 hover:bg-white text-[#9F1E22] font-bold text-sm px-4 py-2 rounded-full shadow-sm border border-[#9F1E22]/20"
+                >
+                  Order Management
+                </button>
               </span>
-              <button
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setSelectedTableId(table.id);
-                  setViewMode("table-orders");
-                }}
-                className="bg-white/70 hover:bg-white text-[#9F1E22] font-bold text-sm px-4 py-2 rounded-full shadow-sm border border-[#9F1E22]/20"
-              >
-                Order Management
-              </button>
-            </span>
-          </motion.div>
-        ))}
+            </motion.div>
+          );
+        })}
       </div>
 
       <div className="w-full mt-12 bg-white rounded-2xl shadow-lg overflow-hidden text-black">
@@ -583,7 +613,7 @@ export const StaffDashboard = () => {
                   <div className="font-bold">Table {order.tableId.replace("t-", "")}</div>
                   <div className="text-sm text-gray-500 uppercase">{order.status}</div>
                 </div>
-                {order.status === "pending" ? (
+                {["pending", "new"].includes(String(order.status || "").toLowerCase()) ? (
                   <button
                     onClick={() => updateOrderStatus(order.id, "canceled")}
                     className="bg-red-100 text-red-600 px-4 py-2 rounded-full font-bold hover:bg-red-200"

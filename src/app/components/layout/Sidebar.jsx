@@ -8,6 +8,7 @@ export const Sidebar = () => {
   const navigate = useNavigate();
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [profileName, setProfileName] = useState('');
+  const [profilePhone, setProfilePhone] = useState('');
   const [profileDob, setProfileDob] = useState('');
   const [profilePhoto, setProfilePhoto] = useState('');
   const fileInputRef = useRef(null);
@@ -22,6 +23,7 @@ export const Sidebar = () => {
   useEffect(() => {
     if (isProfileOpen && user) {
       setProfileName(user.name || '');
+      setProfilePhone(user.phone || '');
       setProfileDob(user.date_of_birth ? user.date_of_birth.slice(0, 10) : '');
       setProfilePhoto(user.photo || user.avatar || '');
     }
@@ -194,6 +196,16 @@ export const Sidebar = () => {
                   className="w-full p-3 rounded-xl border border-[#9F1E22]/20 bg-white"
                 />
               </div>
+              <div>
+                <label className="block font-bold mb-2">Phone</label>
+                <input
+                  type="tel"
+                  value={profilePhone}
+                  onChange={(e) => setProfilePhone(e.target.value)}
+                  placeholder="Enter phone number"
+                  className="w-full p-3 rounded-xl border border-[#9F1E22]/20 bg-white"
+                />
+              </div>
             </div>
 
             <div className="mt-6 flex justify-end gap-3">
@@ -208,6 +220,7 @@ export const Sidebar = () => {
                   await updateProfile({
                     name: profileName,
                     date_of_birth: profileDob || null,
+                    phone: profilePhone || null,
                     photo: profilePhoto || null,
                   });
                   setIsProfileOpen(false);
