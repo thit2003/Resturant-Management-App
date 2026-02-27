@@ -20,7 +20,8 @@ import {
 } from '@/app/components/ui/chart'
 import { useApp } from '@/app/context/AppContext'
 
-const API_BASE = 'http://localhost:3003/api';
+const RAW_API_BASE = String(import.meta.env?.VITE_API_BASE_URL || '').trim() || '/api';
+const API_BASE = RAW_API_BASE.replace(/\/+$/, '');
 const apiUrl = (path) => `${API_BASE}/${String(path || '').replace(/^\/+/, '')}`;
 const getTableRouteId = (id) => String(id || '').replace(/^t-/i, '');
 const normalizeEntityId = (id) => {

@@ -1,0 +1,44 @@
+services:
+  nginx:
+    image: jonasal/nginx-certbot:latest
+    restart: unless-stopped
+    environment:
+      CERTBOT_EMAIL: tlwt2003@gmail.com
+    env_file:
+      - ./nginx-certbot.env
+    ports:
+      - 80:80
+      - 443:443
+    volumes:                                    # Storage can be either a
+      - nginx_secrets:/etc/letsencrypt          # Docker managed volume (see list at the bottom)
+      - ./user_conf.d:/etc/nginx/user_conf.d    # or a host mount with a relative or full path.
+      - next_public:/var/www/html/public
+
+  my-next-backend:
+    image: backend:1.1
+    container_name: backend-server
+    ports:
+      - "3003:3003"
+    environment:
+      NODE_ENV: production
+      MONGODB_URI: mongodb+srv://thitlwin03:thit2062003@cluster0.2q88bzl.mongodb.net/?appName=Cluster0
+      MONGODB_DB: Delulu
+      ADMIN_SETUP_PASS: thitlwin@2062003
+      JWT_SECRET: 3/jcOJ11uO9rak9zzcAtizSX6OsnuSCN21IyseVfofnVMuft5HcEul+nKfhr1JJWEEHPeoaL5DvcWJbuttHYIw==
+    working_dir: /app
+    volumes:
+      - next_public:/app/public
+
+  my-react-frontend:
+    image: frontend:1.5
+    container_name: frontend-server
+    ports:
+      - "8080:80"
+    volumes:
+      - public_react:/usr/share/nginx/html/images
+
+volumes:
+  nginx_secrets:
+  next_public:
+  public_react:
+

@@ -1,27 +1,36 @@
 import { MongoClient } from 'mongodb';
 
-const uri = process.env.MONGODB_URI;
 const configuredDbName = process.env.MONGODB_DB;
 
 const globalForMongo = globalThis;
 
 let mongoClient;
-if (!globalForMongo.__restaurantMongoClient) {
+
+const resolveMongoUri = () => {
+  const uri = process.env.MONGODB_URI;
   if (!uri) {
     throw new Error('MONGODB_URI is not set');
   }
-  globalForMongo.__restaurantMongoClient = new MongoClient(uri);
-  globalForMongo.__restaurantMongoClientPromise = globalForMongo.__restaurantMongoClient.connect();
-}
+  return uri;
+};
 
-mongoClient = globalForMongo.__restaurantMongoClient;
-const mongoClientPromise = globalForMongo.__restaurantMongoClientPromise;
+const initializeMongoClient = () => {
+  if (!globalForMongo.__restaurantMongoClient) {
+    const uri = resolveMongoUri();
+    globalForMongo.__restaurantMongoClient = new MongoClient(uri);
+    globalForMongo.__restaurantMongoClientPromise = globalForMongo.__restaurantMongoClient.connect();
+  }
+
+  mongoClient = globalForMongo.__restaurantMongoClient;
+  return globalForMongo.__restaurantMongoClientPromise;
+};
 
 let indexesEnsured = false;
 
 const resolveDbName = () => {
   if (configuredDbName) return configuredDbName;
   try {
+    const uri = resolveMongoUri();
     const parsed = new URL(uri);
     const name = parsed.pathname?.replace(/^\//, '');
     return name || 'restaurant_db';
@@ -115,6 +124,7 @@ const ensureIndexes = async (db) => {
 };
 
 export const getDb = async () => {
+  const mongoClientPromise = initializeMongoClient();
   const client = await mongoClientPromise;
   const db = client.db(resolveDbName());
   await ensureIndexes(db);
@@ -349,6 +359,84 @@ export const query = async (sql, params = []) => {
         is_available: row.is_available,
       },
     ]);
+  }
+
+  if (
+    normalized.includes('select mi.menu_item_id as id') &&
+    normalized.includes('from menu_item mi') &&
+    normalized.includes('where mi.menu_item_id = $1')
+  ) {
+    const menu_item_id = Number(params?.[0] || 0);
+    const doc = await db
+      .collection('menu_item')
+      .findOne({ menu_item_id }, { projection: { _id: 0 } });
+
+    if (!doc) return createResult([]);
+
+    return createResult([
+      {
+        id: Number(doc.menu_item_id || 0),
+        menuItemId: Number(doc.menu_item_id || 0),
+        name: doc.name || '',
+        category: doc.category || 'Main',
+        price: Number(doc.price || 0),
+        image: doc.photo || null,
+        is_available: doc.is_available !== false,
+      },
+    ]);
+  }
+
+  if (
+    normalized.startsWith('update menu_item set ') &&
+    normalized.includes('where menu_item_id = $') &&
+    normalized.includes('returning menu_item_id as id')
+  ) {
+    const updateMatch = String(sql || '').match(/set\s+([\s\S]+?)\s+where\s+menu_item_id\s*=\s*\$(\d+)/i);
+    const setClause = String(updateMatch?.[1] || '');
+    const idParamIndex = Number(updateMatch?.[2] || 0);
+    const menu_item_id = Number(params?.[idParamIndex - 1] || 0);
+
+    const setParts = setClause
+      .split(',')
+      .map((part) => part.trim())
+      .filter(Boolean);
+
+    const $set = {};
+    for (const part of setParts) {
+      const pairMatch = part.match(/([a-zA-Z_]+)\s*=\s*\$(\d+)/);
+      if (!pairMatch) continue;
+      const field = pairMatch[1];
+      const paramIndex = Number(pairMatch[2]);
+      $set[field] = params?.[paramIndex - 1] ?? null;
+    }
+
+    const result = await db.collection('menu_item').findOneAndUpdate(
+      { menu_item_id },
+      { $set },
+      { returnDocument: 'after', projection: { _id: 0 } },
+    );
+
+    const doc = result?.value || result;
+    if (!doc) return createResult([]);
+
+    return createResult([
+      {
+        id: Number(doc.menu_item_id || 0),
+        menuItemId: Number(doc.menu_item_id || 0),
+        name: doc.name || '',
+        category: doc.category || 'Main',
+        price: Number(doc.price || 0),
+        image: doc.photo || null,
+        is_available: doc.is_available !== false,
+      },
+    ]);
+  }
+
+  if (normalized.includes('delete from menu_item where menu_item_id = $1 returning menu_item_id')) {
+    const menu_item_id = Number(params?.[0] || 0);
+    const result = await db.collection('menu_item').findOneAndDelete({ menu_item_id });
+    const doc = result?.value || result;
+    return createResult(doc ? [{ menu_item_id }] : []);
   }
 
   if (normalized.includes('from app_user') && normalized.includes('where user_id = $1')) {
