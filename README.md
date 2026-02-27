@@ -19,12 +19,12 @@
      - Add:
        - `MONGODB_URI=<your mongo connection string>`
        - `MONGODB_DB=<your database name>`
-      - `VITE_API_BASE_URL=http://localhost:3001`
+      - `VITE_API_BASE_URL=http://localhost:3003`
   3. Start the backend:
      - `cd backend`
      - `npm i`
      - `npm run dev`
-     - Backend runs on `http://localhost:3001`
+   - Backend runs on `http://localhost:3003`
 
   The API expects:
   - `MONGODB_URI` (Mongo connection string)

@@ -20,11 +20,7 @@ import {
 } from '@/app/components/ui/chart'
 import { useApp } from '@/app/context/AppContext'
 
-const API_ROOT = String(import.meta.env.VITE_API_BASE_URL || '/api').replace(
-  /\/+$/,
-  '',
-);
-const API_BASE = API_ROOT.endsWith('/api') ? API_ROOT : `${API_ROOT}/api`;
+const API_BASE = 'http://localhost:3003/api';
 const apiUrl = (path) => `${API_BASE}/${String(path || '').replace(/^\/+/, '')}`;
 const getTableRouteId = (id) => String(id || '').replace(/^t-/i, '');
 const normalizeEntityId = (id) => {

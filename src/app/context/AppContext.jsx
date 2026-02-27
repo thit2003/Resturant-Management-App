@@ -20,11 +20,7 @@ const INITIAL_STAFF = [
   { id: 'u-4', name: 'Cathy Cashier', email: 'cashier@rest.com', role: 'cashier' },
 ];
 
-const API_ROOT = String(import.meta.env.VITE_API_BASE_URL || '/api').replace(
-  /\/+$/,
-  '',
-);
-const API_BASE_URL = API_ROOT.endsWith('/api') ? API_ROOT : `${API_ROOT}/api`;
+const API_BASE_URL = 'http://localhost:3003/api';
 const apiUrl = (path) => `${API_BASE_URL}/${String(path || '').replace(/^\/+/, '')}`;
 const TAX_RATE = 0.07;
 

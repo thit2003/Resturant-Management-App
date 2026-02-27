@@ -215,7 +215,11 @@ export async function PATCH(request, { params }) {
     }
   } catch (error) {
     console.error('PATCH /api/orders/[id] failed', error);
-    return withCors(Response.json({ error: 'Failed to update order' }, { status: 500 }));
+    const message =
+      process.env.NODE_ENV === 'production'
+        ? 'Failed to update order'
+        : `Failed to update order: ${error?.message || 'Unknown error'}`;
+    return withCors(Response.json({ error: message }, { status: 500 }));
   }
 }
 

@@ -17,6 +17,15 @@ export default defineConfig({
     },
   },
 
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3003',
+        changeOrigin: true,
+      },
+    },
+  },
+
   // File types to support raw imports. Never add .css, .jsx, or .js files to this.
   assetsInclude: ['**/*.svg', '**/*.csv'],
 })
