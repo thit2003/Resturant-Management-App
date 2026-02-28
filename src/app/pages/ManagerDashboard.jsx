@@ -1274,13 +1274,6 @@ const TableEditor = ({ table, onClose, onSave }) => {
 
 // 5. Reports
 const Reports = ({ analytics, orders }) => {
-  const [reportType, setReportType] = useState('monthly');
-  const [selectedReportMonth, setSelectedReportMonth] = useState(getCurrentMonthValue);
-  const [monthlyMenuRowsFromDb, setMonthlyMenuRowsFromDb] = useState([]);
-  const [isMonthlyMenuLoading, setIsMonthlyMenuLoading] = useState(false);
-  const [monthlyMenuError, setMonthlyMenuError] = useState('');
-  const [isMonthPickerOpen, setIsMonthPickerOpen] = useState(false);
-  const [pickerYear, setPickerYear] = useState(new Date().getFullYear());
   const validOrders = useMemo(
     () => orders.filter((order) => order.status !== 'canceled'),
     [orders],
@@ -1289,7 +1282,6 @@ const Reports = ({ analytics, orders }) => {
     () => validOrders.filter((order) => order.status === 'paid'),
     [validOrders],
   );
-  const hasAutoSelectedMonthRef = useRef(false);
   const dailyPaidOrders = useMemo(() => {
     const now = new Date();
     return paidOrders.filter((order) => {
@@ -1321,292 +1313,44 @@ const Reports = ({ analytics, orders }) => {
     [dailyPaidOrders, analytics.taxRate],
   );
   const dailyTotal = dailyRows.reduce((sum, row) => sum + row.total, 0);
-  const nextMonthValue = shiftMonthValue(selectedReportMonth, 1);
-  const isNextMonthDisabled = isFutureMonthValue(nextMonthValue);
-  const currentDate = new Date();
-  const currentYear = currentDate.getFullYear();
-  const currentMonth = currentDate.getMonth() + 1;
-  const selectedMonthParts = getMonthParts(selectedReportMonth);
-  const selectedYear = selectedMonthParts?.year ?? currentYear;
-  const selectedMonthNumber = selectedMonthParts?.month ?? currentMonth;
-  const minYear = 1900;
-  const yearOptions = useMemo(() => {
-    const years = [];
-    for (let year = currentYear; year >= minYear; year -= 1) {
-      years.push(year);
-    }
-    return years;
-  }, [currentYear]);
-  const applySelectedMonth = (nextValue) => {
-    if (!nextValue) return;
-    if (isFutureMonthValue(nextValue)) {
-      toast.error('Future month is not allowed');
-      return;
-    }
-    setSelectedReportMonth(nextValue);
-  };
-
-  useEffect(() => {
-    if (hasAutoSelectedMonthRef.current) return;
-    if (paidOrders.length === 0) return;
-    const latestPaidDate = paidOrders.reduce((latest, order) => {
-      const next = new Date(order.paidAt || order.createdAt || 0);
-      return Number(next) > Number(latest) ? next : latest;
-    }, new Date(0));
-    if (Number.isNaN(Number(latestPaidDate)) || Number(latestPaidDate) <= 0) return;
-    const year = latestPaidDate.getFullYear();
-    const month = String(latestPaidDate.getMonth() + 1).padStart(2, '0');
-    setSelectedReportMonth(`${year}-${month}`);
-    hasAutoSelectedMonthRef.current = true;
-  }, [paidOrders]);
-
-  const fetchMonthlyMenuReport = async () => {
-    setIsMonthlyMenuLoading(true);
-    setMonthlyMenuError('');
-    try {
-      const [year, month] = String(selectedReportMonth || '').split('-');
-      const params = new URLSearchParams();
-      if (year && month) {
-        params.set('year', year);
-        params.set('month', String(Number(month)));
-      }
-      const queryString = params.toString();
-      const reportPath = queryString
-        ? `reports/monthly-menu?${queryString}`
-        : 'reports/monthly-menu';
-      const res = await fetch(apiUrl(reportPath), { cache: 'no-store' });
-      if (!res.ok) throw new Error(await readErrorMessage(res, 'Failed to load monthly menu report'));
-      const data = await res.json();
-      const mapped = (Array.isArray(data) ? data : []).map((row) => ({
-        month: formatMonthlyReportRowMonth(row.month),
-        item: row.item,
-        quantity: Number(row.quantity || 0),
-        revenue: Number(row.revenue || 0),
-      }));
-      setMonthlyMenuRowsFromDb(mapped);
-    } catch (error) {
-      setMonthlyMenuError(error?.message || 'Failed to load monthly menu report');
-    } finally {
-      setIsMonthlyMenuLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (reportType !== 'monthly') return;
-
-    fetchMonthlyMenuReport();
-    const intervalId = setInterval(fetchMonthlyMenuReport, 10000);
-    return () => clearInterval(intervalId);
-  }, [reportType, selectedReportMonth]);
-
-  const monthlyGrandTotals = useMemo(
-    () =>
-      monthlyMenuRowsFromDb.reduce(
-        (acc, row) => ({
-          quantity: acc.quantity + row.quantity,
-          revenue: acc.revenue + row.revenue,
-        }),
-        { quantity: 0, revenue: 0 },
-      ),
-    [monthlyMenuRowsFromDb],
-  );
 
   return (
     <div className="bg-[#F2E8DC] rounded-3xl shadow-xl overflow-hidden p-8 min-h-[80vh] flex flex-col">
-       {/* Toggle */}
-       <div className="flex justify-center gap-12 mb-10">
-         <button 
-           onClick={() => setReportType('daily')}
-           className={`px-12 py-3 rounded-full font-bold text-xl shadow-md transition-all ${reportType === 'daily' ? 'bg-white text-black scale-105' : 'bg-white/50 text-gray-500'}`}
-         >
-           Daily
-         </button>
-         <button 
-           onClick={() => setReportType('monthly')}
-           className={`px-12 py-3 rounded-full font-bold text-xl shadow-md transition-all ${reportType === 'monthly' ? 'bg-white text-black scale-105' : 'bg-white/50 text-gray-500'}`}
-         >
-           Monthly
-         </button>
-       </div>
-
-       {/* Table Content */}
+       {/* Daily Report */}
        <div className="bg-white rounded-xl overflow-hidden shadow-sm flex-1">
-         {reportType === 'daily' ? (
-            <>
-              <div className="rounded-2xl border border-[#9F1E22]/10 overflow-hidden shadow-sm">
-                <div className="grid grid-cols-[1.6fr_3.4fr_1.8fr_1.8fr_2.2fr] bg-gradient-to-r from-[#FFD700] to-[#FCD34D] text-black font-black text-base uppercase tracking-wide px-6 py-5">
-                  <div>Order Number</div>
-                  <div>Item</div>
-                  <div className="text-right">Price</div>
-                  <div className="text-right">Time</div>
-                  <div className="text-right">Total (Tax Incl.)</div>
+          <div className="rounded-2xl border border-[#9F1E22]/10 overflow-hidden shadow-sm">
+            <div className="grid grid-cols-[1.6fr_3.4fr_1.8fr_1.8fr_2.2fr] bg-gradient-to-r from-[#FFD700] to-[#FCD34D] text-black font-black text-base uppercase tracking-wide px-6 py-5">
+              <div>Order Number</div>
+              <div>Item</div>
+              <div className="text-right">Price</div>
+              <div className="text-right">Time</div>
+              <div className="text-right">Total (Tax Incl.)</div>
+            </div>
+            <div className="divide-y divide-gray-100">
+              {dailyRows.map((row) => (
+                <div
+                  key={row.key}
+                  className="grid grid-cols-[1.6fr_3.4fr_1.8fr_1.8fr_2.2fr] px-6 py-5 text-black font-medium text-lg hover:bg-[#FFFBEA] transition-colors even:bg-gray-50/60"
+                >
+                  <div className="font-semibold">{row.orderId}</div>
+                  <div>{row.item}</div>
+                  <div className="text-right">฿{row.price.toFixed(2)}</div>
+                  <div className="text-right">{row.time}</div>
+                  <div className="text-right font-black text-[#9F1E22]">฿{row.total.toFixed(2)}</div>
                 </div>
-                <div className="divide-y divide-gray-100">
-                  {dailyRows.map((row) => (
-                    <div
-                      key={row.key}
-                      className="grid grid-cols-[1.6fr_3.4fr_1.8fr_1.8fr_2.2fr] px-6 py-5 text-black font-medium text-lg hover:bg-[#FFFBEA] transition-colors even:bg-gray-50/60"
-                    >
-                      <div className="font-semibold">{row.orderId}</div>
-                      <div>{row.item}</div>
-                      <div className="text-right">฿{row.price.toFixed(2)}</div>
-                      <div className="text-right">{row.time}</div>
-                      <div className="text-right font-black text-[#9F1E22]">฿{row.total.toFixed(2)}</div>
-                    </div>
-                  ))}
-                </div>
-                {dailyRows.length === 0 && (
-                  <div className="p-10 text-center text-[#9F1E22]/70 italic">No paid transactions for today.</div>
-                )}
-                <div className="grid grid-cols-[1.6fr_3.4fr_1.8fr_1.8fr_2.2fr] bg-[#9F1E22] text-white px-6 py-5 text-lg font-bold">
-                  <div className="uppercase tracking-wide">Total</div>
-                  <div></div>
-                  <div></div>
-                  <div></div>
-                  <div className="text-right">฿{dailyTotal.toFixed(2)}</div>
-                </div>
-              </div>
-            </>
-         ) : (
-            <>
-              <div className="mb-5 flex justify-end px-1">
-                <div className="flex w-full items-center justify-between rounded-xl bg-[#E5E7EB] px-3 py-2 text-[#111827] shadow-sm">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedReportMonth((prev) => shiftMonthValue(prev, -1))}
-                    className="rounded-md p-2 transition-colors hover:bg-black/5"
-                    aria-label="Previous month"
-                  >
-                    <ChevronLeft size={24} />
-                  </button>
-                  <div className="flex items-center gap-3 text-3xl font-semibold">
-                    <div className="relative">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setPickerYear(selectedYear);
-                          setIsMonthPickerOpen((prev) => !prev);
-                        }}
-                        className="rounded-md p-1 transition-colors hover:bg-black/5"
-                        aria-label="Open month and year picker"
-                      >
-                        <CalendarDays size={24} />
-                      </button>
-                      {isMonthPickerOpen && (
-                        <div className="absolute left-0 top-11 z-20 w-72 rounded-xl border border-black/10 bg-white p-3 shadow-xl">
-                          <div className="mb-3">
-                            <select
-                              value={pickerYear}
-                              onChange={(e) => setPickerYear(Number.parseInt(e.target.value, 10))}
-                              className="w-full rounded-md border border-black/15 px-3 py-2 text-base font-semibold outline-none focus:border-[#9F1E22]"
-                            >
-                              {yearOptions.map((year) => (
-                                <option key={year} value={year}>
-                                  {year}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                          <div className="grid grid-cols-4 gap-2">
-                            {MONTH_LABELS.map((label, index) => {
-                              const month = index + 1;
-                              const monthValue = buildMonthValue(pickerYear, month);
-                              const isDisabled = isFutureMonthValue(monthValue);
-                              const isSelected = pickerYear === selectedYear && month === selectedMonthNumber;
-                              return (
-                                <button
-                                  key={`${pickerYear}-${label}`}
-                                  type="button"
-                                  onClick={() => {
-                                    if (isDisabled) return;
-                                    applySelectedMonth(monthValue);
-                                    setIsMonthPickerOpen(false);
-                                  }}
-                                  disabled={isDisabled}
-                                  className={`rounded-md border px-2 py-2 text-sm font-semibold transition-colors ${
-                                    isSelected
-                                      ? 'border-[#9F1E22] bg-[#9F1E22] text-white'
-                                      : 'border-black/15 bg-white text-black hover:bg-[#FFF5D0]'
-                                  } disabled:cursor-not-allowed disabled:opacity-35`}
-                                >
-                                  {label}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                    <span>{formatMonthValue(selectedReportMonth)}</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (isNextMonthDisabled) return;
-                      setSelectedReportMonth(nextMonthValue);
-                    }}
-                    disabled={isNextMonthDisabled}
-                    className="rounded-md p-2 transition-colors hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
-                    aria-label="Next month"
-                  >
-                    <ChevronRight size={24} />
-                  </button>
-                </div>
-              </div>
-              <div className="rounded-2xl border border-[#9F1E22]/10 overflow-hidden shadow-sm">
-                <div className="grid grid-cols-[1.2fr_3.8fr_2fr_2fr] bg-gradient-to-r from-[#FFD700] to-[#FCD34D] text-black font-black text-base uppercase tracking-wide px-6 py-5">
-                  <div>Month</div>
-                  <div>Menu Item</div>
-                  <div className="text-right">Total Order Qty</div>
-                  <div className="text-right">Revenue</div>
-                </div>
-                <div className="divide-y divide-gray-100">
-                {monthlyMenuRowsFromDb.map((row) => (
-                  <div
-                    key={`${row.month}-${row.item}`}
-                    className="grid grid-cols-[1.2fr_3.8fr_2fr_2fr] px-6 py-5 text-black font-medium text-lg hover:bg-[#FFFBEA] transition-colors even:bg-gray-50/60"
-                  >
-                    <div>
-                      <span className="inline-flex items-center rounded-full bg-[#9F1E22]/10 px-3 py-1 text-sm font-bold text-[#9F1E22]">
-                        {row.month}
-                      </span>
-                    </div>
-                    <div className="font-semibold">{row.item}</div>
-                    <div className="text-right">
-                      <span className="inline-flex min-w-16 justify-center rounded-full bg-[#F2E8DC] px-3 py-1 font-bold">
-                        {row.quantity}
-                      </span>
-                    </div>
-                    <div className="text-right font-black text-[#9F1E22]">
-                      ฿{row.revenue.toFixed(2)}
-                    </div>
-                  </div>
-                ))}
-                {isMonthlyMenuLoading && (
-                  <div className="p-10 text-center text-[#9F1E22]/70 italic">
-                    Loading monthly menu report...
-                  </div>
-                )}
-                {!isMonthlyMenuLoading && !!monthlyMenuError && (
-                  <div className="p-10 text-center text-[#9F1E22]/70 italic">{monthlyMenuError}</div>
-                )}
-                {!isMonthlyMenuLoading && !monthlyMenuError && monthlyMenuRowsFromDb.length === 0 && (
-                  <div className="p-10 text-center text-[#9F1E22]/70 italic">
-                    No monthly menu report data found in database.
-                  </div>
-                )}
-                </div>
-                {monthlyMenuRowsFromDb.length > 0 && (
-                  <div className="grid grid-cols-[1.2fr_3.8fr_2fr_2fr] bg-[#9F1E22] text-white px-6 py-5 text-lg font-bold">
-                    <div className="uppercase tracking-wide">Grand Total</div>
-                    <div>All Menu Items</div>
-                    <div className="text-right">{monthlyGrandTotals.quantity}</div>
-                    <div className="text-right">฿{monthlyGrandTotals.revenue.toFixed(2)}</div>
-                  </div>
-                )}
-              </div>
-            </>
-         )}
+              ))}
+            </div>
+            {dailyRows.length === 0 && (
+              <div className="p-10 text-center text-[#9F1E22]/70 italic">No paid transactions for today.</div>
+            )}
+            <div className="grid grid-cols-[1.6fr_3.4fr_1.8fr_1.8fr_2.2fr] bg-[#9F1E22] text-white px-6 py-5 text-lg font-bold">
+              <div className="uppercase tracking-wide">Total</div>
+              <div></div>
+              <div></div>
+              <div></div>
+              <div className="text-right">฿{dailyTotal.toFixed(2)}</div>
+            </div>
+          </div>
        </div>
     </div>
   );
