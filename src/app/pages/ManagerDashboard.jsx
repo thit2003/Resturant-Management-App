@@ -108,6 +108,21 @@ const formatMonthValue = (monthValue) => {
   });
 };
 
+const formatMonthlyReportRowMonth = (monthValue) => {
+  const raw = String(monthValue || '').trim();
+  const match = raw.match(/^(\d{4})-(\d{1,2})/);
+  if (!match) return '--';
+  const year = Number.parseInt(match[1], 10);
+  const month = Number.parseInt(match[2], 10);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return '--';
+  }
+  return new Date(year, month - 1, 1).toLocaleDateString([], {
+    month: 'short',
+    year: 'numeric',
+  });
+};
+
 const getMonthParts = (monthValue) => {
   const [yearRaw, monthRaw] = String(monthValue || '').split('-');
   const year = Number.parseInt(yearRaw, 10);
@@ -1363,7 +1378,7 @@ const Reports = ({ analytics, orders }) => {
       if (!res.ok) throw new Error(await readErrorMessage(res, 'Failed to load monthly menu report'));
       const data = await res.json();
       const mapped = (Array.isArray(data) ? data : []).map((row) => ({
-        month: row.month,
+        month: formatMonthlyReportRowMonth(row.month),
         item: row.item,
         quantity: Number(row.quantity || 0),
         revenue: Number(row.revenue || 0),
