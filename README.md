@@ -24,9 +24,17 @@ Traditional paper-based restaurant operations often cause:
 ### Target Users
 Restaurant employees with role-based responsibilities:
 - **Manager**
+  admin@gmail.com
+  1234
 - **Staff (Waiter)**
+  waiter@rest.com
+  1234
 - **Chef**
+  chef@gmail.com
+  1234
 - **Cashier**
+  cashier@rest.com
+  1234
 
 ### Why It Matters
 This system helps reduce customer waiting time, minimize human errors (orders, tax, totals), and provides managers with instant insights (e.g., daily sales totals) for better decision-making.
