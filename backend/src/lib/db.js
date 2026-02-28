@@ -803,7 +803,7 @@ export const query = async (sql, params = []) => {
       db.collection('restaurant_table').find({}, { projection: { _id: 0, table_id: 1, table_no: 1 } }).toArray(),
       db.collection('payment').find({}, { projection: { _id: 0 } }).toArray(),
       db.collection('order_item').find({}, { projection: { _id: 0 } }).sort({ order_item_id: 1 }).toArray(),
-      db.collection('menu_item').find({}, { projection: { _id: 0, menu_item_id: 1, name: 1 } }).toArray(),
+      db.collection('menu_item').find({}, { projection: { _id: 0, menu_item_id: 1, name: 1, price: 1 } }).toArray(),
     ]);
 
     const tableById = new Map(tables.map((row) => [Number(row.table_id), row]));
@@ -852,6 +852,8 @@ export const query = async (sql, params = []) => {
 
       for (const item of orderItems) {
         const menu = menuById.get(Number(item.menu_item_id));
+        const item_name = menu?.name || '';
+        const unit_price = Number(item.unit_price || 0);
         rows.push({
           order_id: orderId,
           order_time: order.order_time,
@@ -860,9 +862,9 @@ export const query = async (sql, params = []) => {
           order_status: order.status || 'new',
           order_item_id: Number(item.order_item_id || 0),
           menu_item_id: Number(item.menu_item_id || 0),
-          item_name: menu?.name || 'Unknown',
+          item_name: item_name,
           quantity: Number(item.quantity || 0),
-          unit_price: Number(item.unit_price || 0),
+          unit_price: unit_price,
           subtotal,
           tax: Number(payment?.tax || 0),
           discount: Number(payment?.discount || 0),
