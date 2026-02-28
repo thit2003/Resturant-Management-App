@@ -23,17 +23,17 @@ Traditional paper-based restaurant operations often cause:
 
 ### Target Users
 Restaurant employees with role-based responsibilities:
-- **Manager**
-  admin@gmail.com
+- **Manager** <br>
+  admin@gmail.com <br>
   1234
-- **Staff (Waiter)**
-  waiter@rest.com
+- **Staff (Waiter)** <br>
+  waiter@rest.com <br>
   1234
-- **Chef**
-  chef@gmail.com
+- **Chef** <br>
+  chef@gmail.com <br>
   1234
-- **Cashier**
-  cashier@rest.com
+- **Cashier** <br>
+  cashier@rest.com <br>
   1234
 
 ### Why It Matters
