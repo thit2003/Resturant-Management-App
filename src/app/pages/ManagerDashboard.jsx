@@ -1275,9 +1275,21 @@ const Reports = ({ analytics, orders }) => {
     [validOrders],
   );
   const hasAutoSelectedMonthRef = useRef(false);
+  const dailyPaidOrders = useMemo(() => {
+    const now = new Date();
+    return paidOrders.filter((order) => {
+      const orderDate = new Date(order.paidAt || order.createdAt || 0);
+      if (Number.isNaN(Number(orderDate))) return false;
+      return (
+        orderDate.getFullYear() === now.getFullYear() &&
+        orderDate.getMonth() === now.getMonth() &&
+        orderDate.getDate() === now.getDate()
+      );
+    });
+  }, [paidOrders]);
   const dailyRows = useMemo(
     () =>
-      paidOrders.flatMap((order) =>
+      dailyPaidOrders.flatMap((order) =>
         (order.items || []).map((item, index) => ({
           key: `${order.id}-${index}`,
           orderId: order.id,
@@ -1291,7 +1303,7 @@ const Reports = ({ analytics, orders }) => {
           total: Number(item.price || 0) * Number(item.quantity || 0) * (1 + analytics.taxRate),
         })),
       ),
-    [paidOrders, analytics.taxRate],
+    [dailyPaidOrders, analytics.taxRate],
   );
   const dailyTotal = dailyRows.reduce((sum, row) => sum + row.total, 0);
   const nextMonthValue = shiftMonthValue(selectedReportMonth, 1);
@@ -1429,7 +1441,7 @@ const Reports = ({ analytics, orders }) => {
                   ))}
                 </div>
                 {dailyRows.length === 0 && (
-                  <div className="p-10 text-center text-[#9F1E22]/70 italic">No paid transactions yet.</div>
+                  <div className="p-10 text-center text-[#9F1E22]/70 italic">No paid transactions for today.</div>
                 )}
                 <div className="grid grid-cols-[1.6fr_3.4fr_1.8fr_1.8fr_2.2fr] bg-[#9F1E22] text-white px-6 py-5 text-lg font-bold">
                   <div className="uppercase tracking-wide">Total</div>
