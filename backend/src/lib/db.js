@@ -357,9 +357,18 @@ export const query = async (sql, params = []) => {
     normalized.includes('returning table_id')
   ) {
     const table_id = Number(params?.[0] || 0);
-    const result = await db.collection('restaurant_table').findOneAndDelete({ table_id });
-    const doc = result?.value || result;
-    return createResult(doc ? [{ table_id }] : []);
+    
+    // First check if table exists
+    const existing = await db.collection('restaurant_table').findOne({ table_id }, { projection: { _id: 0, table_id: 1 } });
+    if (!existing) {
+      return createResult([]);
+    }
+
+    // Delete the table
+    await db.collection('restaurant_table').deleteOne({ table_id });
+    
+    // Return the deleted table_id
+    return createResult([{ table_id }]);
   }
 
   if (
