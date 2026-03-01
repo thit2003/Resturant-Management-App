@@ -305,8 +305,61 @@ export const query = async (sql, params = []) => {
     const table_id = Number(params?.[0] || 0);
     const row = await db
       .collection('restaurant_table')
-      .findOne({ table_id }, { projection: { _id: 0, table_id: 1 } });
+      .findOne({ table_id }, { projection: { _id: 0, table_id: 1, table_no: 1, capacity: 1 } });
     return createResult(row ? [row] : []);
+  }
+
+  if (
+    normalized.startsWith('update restaurant_table') &&
+    normalized.includes('where table_id = $') &&
+    normalized.includes('returning table_id, table_no, capacity')
+  ) {
+    const updateMatch = String(sql || '').match(/set\s+([\s\S]+?)\s+where\s+table_id\s*=\s*\$(\d+)/i);
+    const setClause = String(updateMatch?.[1] || '');
+    const idParamIndex = Number(updateMatch?.[2] || 0);
+    const table_id = Number(params?.[idParamIndex - 1] || 0);
+
+    const setParts = setClause
+      .split(',')
+      .map((part) => part.trim())
+      .filter(Boolean);
+
+    const $set = {};
+    for (const part of setParts) {
+      const pairMatch = part.match(/([a-zA-Z_]+)\s*=\s*\$(\d+)/);
+      if (!pairMatch) continue;
+      const field = pairMatch[1];
+      const paramIndex = Number(pairMatch[2]);
+      $set[field] = params?.[paramIndex - 1] ?? null;
+    }
+
+    const result = await db.collection('restaurant_table').findOneAndUpdate(
+      { table_id },
+      { $set },
+      { returnDocument: 'after', projection: { _id: 0 } },
+    );
+
+    const doc = result?.value || result;
+    if (!doc) return createResult([]);
+
+    return createResult([
+      {
+        table_id: Number(doc.table_id || 0),
+        table_no: doc.table_no || '',
+        capacity: Number(doc.capacity || 0),
+      },
+    ]);
+  }
+
+  if (
+    normalized.includes('delete from restaurant_table') &&
+    normalized.includes('where table_id = $1') &&
+    normalized.includes('returning table_id')
+  ) {
+    const table_id = Number(params?.[0] || 0);
+    const result = await db.collection('restaurant_table').findOneAndDelete({ table_id });
+    const doc = result?.value || result;
+    return createResult(doc ? [{ table_id }] : []);
   }
 
   if (
