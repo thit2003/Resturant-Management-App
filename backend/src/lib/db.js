@@ -357,16 +357,23 @@ export const query = async (sql, params = []) => {
     normalized.includes('returning table_id')
   ) {
     const table_id = Number(params?.[0] || 0);
+    console.log('🔴 DELETE TABLE - Received table_id:', table_id, 'Type:', typeof table_id);
     
-    // First check if table exists
-    const existing = await db.collection('restaurant_table').findOne({ table_id }, { projection: { _id: 0, table_id: 1 } });
-    if (!existing) {
+    // Check what exists before deleting
+    const existingTable = await db.collection('restaurant_table').findOne({ table_id });
+    console.log('🔴 DELETE TABLE - Found existing table:', existingTable);
+    
+    // Delete the table and check if it was actually deleted
+    const deleteResult = await db.collection('restaurant_table').deleteOne({ table_id });
+    console.log('🔴 DELETE TABLE - Delete result:', deleteResult);
+    
+    // If deletedCount is 0, table was not found
+    if (deleteResult.deletedCount === 0) {
+      console.log('🔴 DELETE TABLE - No table deleted, returning empty result');
       return createResult([]);
     }
-
-    // Delete the table
-    await db.collection('restaurant_table').deleteOne({ table_id });
     
+    console.log('🔴 DELETE TABLE - Successfully deleted, returning table_id:', table_id);
     // Return the deleted table_id
     return createResult([{ table_id }]);
   }
